@@ -39,6 +39,32 @@ def init_db() -> None:
     from app import models  # noqa: F401  ensure models register with metadata
 
     SQLModel.metadata.create_all(get_engine())
+    _apply_additive_migrations()
+
+
+def _apply_additive_migrations() -> None:
+    """Apply idempotent ``ALTER TABLE ... ADD COLUMN`` steps for existing DBs.
+
+    SQLModel's ``create_all`` only handles missing *tables*; adding columns to an
+    existing table is a no-op. Until we introduce Alembic this helper bridges the
+    gap so upgrading a running panel doesn't require wiping ``panel.db``.
+    """
+    engine = get_engine()
+    if engine.url.get_backend_name() != "sqlite":  # pragma: no cover — sqlite only
+        return
+    with engine.begin() as conn:
+        existing = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info(telegram_accounts)")
+        }
+        if "api_id" not in existing:
+            conn.exec_driver_sql(
+                "ALTER TABLE telegram_accounts ADD COLUMN api_id INTEGER"
+            )
+        if "api_hash" not in existing:
+            conn.exec_driver_sql(
+                "ALTER TABLE telegram_accounts ADD COLUMN api_hash VARCHAR(64)"
+            )
 
 
 def get_session() -> Iterator[Session]:

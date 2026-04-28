@@ -22,7 +22,13 @@ for directory in [SESSIONS_DIR, CACHE_DIR, LOG_DIR, EXPORT_DIR]:
 
 # Файлы
 SESSION_NAME = 'telegram_session'
-SESSION_PATH = os.path.join(SESSIONS_DIR, f'{SESSION_NAME}.session')
+# Позволяем переопределить путь к файлу сессии через переменную окружения.
+# Нужно для web-panel: каждый подпроцесс парсера использует свой .session,
+# соответствующий выбранному Telegram-аккаунту.
+SESSION_PATH = os.environ.get(
+    'PARSER_SESSION_PATH',
+    os.path.join(SESSIONS_DIR, f'{SESSION_NAME}.session'),
+)
 CACHE_FILE = os.path.join(CACHE_DIR, 'cache.json')
 LOG_FILE = os.path.join(LOG_DIR, 'parser.log')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels.txt')
