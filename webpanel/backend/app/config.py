@@ -36,6 +36,12 @@ class Settings(BaseSettings):
         description="CSV list of allowed CORS origins for the SvelteKit dev server",
     )
 
+    frontend_dir: Path | None = Field(
+        default=None,
+        description="If set, FastAPI serves the built SvelteKit SPA from this directory "
+        "under '/' (with SPA fallback). Leave unset in API-only deployments.",
+    )
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:
