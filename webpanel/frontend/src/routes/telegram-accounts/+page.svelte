@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
 	import { auth } from '$lib/stores/auth.svelte';
-	import type { TelegramAccount } from '$lib/types';
+	import type { SendCodeResponse, TelegramAccount, VerifyResponse } from '$lib/types';
 
 	let accounts = $state<TelegramAccount[]>([]);
 	let loading = $state(false);
@@ -12,6 +12,17 @@
 	let newShared = $state(false);
 	let submitting = $state(false);
 	let formError = $state<string | null>(null);
+
+	type AuthStep = 'creds' | 'code' | 'password';
+	let authAccount = $state<TelegramAccount | null>(null);
+	let authStep = $state<AuthStep>('creds');
+	let authApiId = $state('');
+	let authApiHash = $state('');
+	let authPhone = $state('');
+	let authCode = $state('');
+	let authPassword = $state('');
+	let authBusy = $state(false);
+	let authError = $state<string | null>(null);
 
 	async function refresh(): Promise<void> {
 		loading = true;
@@ -73,6 +84,111 @@
 		}
 	}
 
+	function openAuth(account: TelegramAccount): void {
+		authAccount = account;
+		authStep = 'creds';
+		authApiId = account.api_id ? String(account.api_id) : '';
+		authApiHash = '';
+		authPhone = account.phone ?? '';
+		authCode = '';
+		authPassword = '';
+		authError = null;
+		authBusy = false;
+	}
+
+	function closeAuth(): void {
+		authAccount = null;
+		authError = null;
+		authBusy = false;
+	}
+
+	async function submitAuthCreds(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		if (!authAccount || authBusy) return;
+		authBusy = true;
+		authError = null;
+		try {
+			await api<SendCodeResponse>(`/api/telegram/accounts/${authAccount.id}/send-code`, {
+				method: 'POST',
+				body: {
+					api_id: Number(authApiId),
+					api_hash: authApiHash.trim(),
+					phone: authPhone.trim()
+				}
+			});
+			authStep = 'code';
+		} catch (error) {
+			authError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			authBusy = false;
+		}
+	}
+
+	async function submitAuthCode(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		if (!authAccount || authBusy) return;
+		authBusy = true;
+		authError = null;
+		try {
+			const result = await api<VerifyResponse>(
+				`/api/telegram/accounts/${authAccount.id}/verify`,
+				{
+					method: 'POST',
+					body: { code: authCode.trim() }
+				}
+			);
+			if (result.needs_password) {
+				authStep = 'password';
+			} else if (result.is_authorized) {
+				await refresh();
+				closeAuth();
+			}
+		} catch (error) {
+			authError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			authBusy = false;
+		}
+	}
+
+	async function submitAuthPassword(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		if (!authAccount || authBusy) return;
+		authBusy = true;
+		authError = null;
+		try {
+			const result = await api<VerifyResponse>(
+				`/api/telegram/accounts/${authAccount.id}/verify`,
+				{
+					method: 'POST',
+					body: { password: authPassword }
+				}
+			);
+			if (result.is_authorized) {
+				await refresh();
+				closeAuth();
+			} else {
+				authError = 'Неожиданный ответ от сервера, попробуйте ещё раз';
+			}
+		} catch (error) {
+			authError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			authBusy = false;
+		}
+	}
+
+	async function logoutAccount(account: TelegramAccount): Promise<void> {
+		if (account.owner_id !== auth.user?.id) return;
+		if (!confirm(`Выйти из Telegram-аккаунта ${account.label}?`)) return;
+		try {
+			await api<TelegramAccount>(`/api/telegram/accounts/${account.id}/logout`, {
+				method: 'POST'
+			});
+			await refresh();
+		} catch (error) {
+			errorMessage = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
 	$effect(() => {
 		refresh();
 	});
@@ -85,8 +201,9 @@
 		</p>
 		<h1 class="text-2xl font-semibold tracking-tight">Telegram-аккаунты</h1>
 		<p class="max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-			Видны свои аккаунты и все аккаунты других пользователей с флагом <em>shared</em>. Реальный
-			логин через Telethon (send-code / sign-in / 2FA) подключается в следующем PR.
+			Каждый слот — независимая Telethon-сессия со своей парой <code>api_id</code> /
+			<code>api_hash</code>. Чем больше авторизованных аккаунтов, тем больше параллельных
+			подключений доступно парсеру.
 		</p>
 	</header>
 
@@ -105,7 +222,7 @@
 				/>
 			</label>
 			<label class="min-w-[180px] flex-1 space-y-1.5 text-sm">
-				<span class="font-medium text-slate-700 dark:text-slate-300">Телефон</span>
+				<span class="font-medium text-slate-700 dark:text-slate-300">Телефон (необязательно)</span>
 				<input
 					type="text"
 					maxlength="32"
@@ -208,7 +325,18 @@
 							{/if}
 						</td>
 						<td class="text-right">
-							<div class="inline-flex gap-2">
+							<div class="inline-flex flex-wrap justify-end gap-2">
+								{#if isOwner}
+									{#if account.is_authorized}
+										<button class="btn-secondary btn-sm" onclick={() => logoutAccount(account)}>
+											Выйти
+										</button>
+									{:else}
+										<button class="btn-primary btn-sm" onclick={() => openAuth(account)}>
+											Авторизовать
+										</button>
+									{/if}
+								{/if}
 								<button
 									class="btn-secondary btn-sm"
 									disabled={!isOwner}
@@ -240,3 +368,211 @@
 		</div>
 	{/if}
 </div>
+
+{#if authAccount}
+	<div
+		class="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 px-4 backdrop-blur-sm"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="auth-modal-title"
+	>
+		<div
+			class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl
+				dark:border-slate-800 dark:bg-slate-950"
+		>
+			<div class="mb-4 flex items-start justify-between gap-3">
+				<div>
+					<p class="text-xs font-medium uppercase tracking-wider text-sky-600">Авторизация</p>
+					<h2 id="auth-modal-title" class="text-lg font-semibold tracking-tight">
+						{authAccount.label}
+					</h2>
+				</div>
+				<button
+					class="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600
+						dark:hover:bg-slate-900 dark:hover:text-slate-300"
+					aria-label="Закрыть"
+					onclick={closeAuth}
+				>
+					<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+						<path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+					</svg>
+				</button>
+			</div>
+
+			<ol class="mb-5 flex items-center gap-2 text-xs font-medium">
+				{#each ['creds', 'code', 'password'] as step, idx}
+					{@const isActive = authStep === step}
+					{@const isDone =
+						(step === 'creds' && authStep !== 'creds') ||
+						(step === 'code' && authStep === 'password')}
+					<li class="flex items-center gap-2">
+						<span
+							class={`flex h-6 w-6 items-center justify-center rounded-full text-[11px]
+								${
+									isActive
+										? 'bg-sky-500 text-white shadow-sm shadow-sky-500/40'
+										: isDone
+										? 'bg-emerald-500 text-white'
+										: 'bg-slate-100 text-slate-400 dark:bg-slate-900 dark:text-slate-500'
+								}`}
+						>
+							{idx + 1}
+						</span>
+						<span
+							class={`capitalize
+								${isActive ? 'text-slate-900 dark:text-slate-100' : 'text-slate-400'}`}
+						>
+							{step === 'creds' ? 'Креды' : step === 'code' ? 'Код' : '2FA'}
+						</span>
+						{#if idx < 2}
+							<span class="mx-1 h-px w-6 bg-slate-200 dark:bg-slate-800"></span>
+						{/if}
+					</li>
+				{/each}
+			</ol>
+
+			{#if authStep === 'creds'}
+				<form onsubmit={submitAuthCreds} class="space-y-3">
+					<p class="text-xs text-slate-500 dark:text-slate-400">
+						API-креды получите на
+						<a
+							href="https://my.telegram.org/apps"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="font-medium text-sky-600 hover:underline"
+						>
+							my.telegram.org
+						</a>
+						→ API development tools. Хэш хранится только на сервере; при повторной авторизации
+						введите заново.
+					</p>
+					<label class="block space-y-1.5 text-sm">
+						<span class="font-medium text-slate-700 dark:text-slate-300">API_ID</span>
+						<input
+							type="number"
+							required
+							min="1"
+							bind:value={authApiId}
+							placeholder="12345678"
+							class="input"
+						/>
+					</label>
+					<label class="block space-y-1.5 text-sm">
+						<span class="font-medium text-slate-700 dark:text-slate-300">API_HASH</span>
+						<input
+							type="password"
+							required
+							minlength="8"
+							maxlength="64"
+							bind:value={authApiHash}
+							placeholder="••••••••"
+							class="input font-mono"
+						/>
+					</label>
+					<label class="block space-y-1.5 text-sm">
+						<span class="font-medium text-slate-700 dark:text-slate-300">Телефон</span>
+						<input
+							type="tel"
+							required
+							minlength="5"
+							maxlength="32"
+							bind:value={authPhone}
+							placeholder="+79990001122"
+							class="input font-mono"
+						/>
+					</label>
+					{#if authError}
+						<div class="banner-error">
+							<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+								<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+							</svg>
+							<span>{authError}</span>
+						</div>
+					{/if}
+					<div class="flex justify-end gap-2 pt-1">
+						<button type="button" class="btn-secondary" onclick={closeAuth}>Отмена</button>
+						<button type="submit" class="btn-primary" disabled={authBusy}>
+							{authBusy ? 'Отправляем…' : 'Получить код'}
+						</button>
+					</div>
+				</form>
+			{:else if authStep === 'code'}
+				<form onsubmit={submitAuthCode} class="space-y-3">
+					<p class="text-xs text-slate-500 dark:text-slate-400">
+						Код отправлен в Telegram на номер <span class="font-mono">{authPhone}</span>.
+						Проверьте «Избранное» или входящие сообщения от Telegram.
+					</p>
+					<label class="block space-y-1.5 text-sm">
+						<span class="font-medium text-slate-700 dark:text-slate-300">Код подтверждения</span>
+						<input
+							type="text"
+							required
+							minlength="3"
+							maxlength="16"
+							bind:value={authCode}
+							placeholder="12345"
+							class="input text-center font-mono text-lg tracking-widest"
+							inputmode="numeric"
+							autocomplete="one-time-code"
+						/>
+					</label>
+					{#if authError}
+						<div class="banner-error">
+							<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+								<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+							</svg>
+							<span>{authError}</span>
+						</div>
+					{/if}
+					<div class="flex justify-end gap-2 pt-1">
+						<button
+							type="button"
+							class="btn-secondary"
+							onclick={() => {
+								authStep = 'creds';
+								authError = null;
+							}}
+						>
+							Назад
+						</button>
+						<button type="submit" class="btn-primary" disabled={authBusy}>
+							{authBusy ? 'Проверяем…' : 'Подтвердить'}
+						</button>
+					</div>
+				</form>
+			{:else}
+				<form onsubmit={submitAuthPassword} class="space-y-3">
+					<p class="text-xs text-slate-500 dark:text-slate-400">
+						У аккаунта включена двухфакторная защита. Введите облачный пароль Telegram.
+					</p>
+					<label class="block space-y-1.5 text-sm">
+						<span class="font-medium text-slate-700 dark:text-slate-300">Облачный пароль</span>
+						<input
+							type="password"
+							required
+							maxlength="256"
+							bind:value={authPassword}
+							placeholder="••••••••"
+							class="input"
+							autocomplete="current-password"
+						/>
+					</label>
+					{#if authError}
+						<div class="banner-error">
+							<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+								<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+							</svg>
+							<span>{authError}</span>
+						</div>
+					{/if}
+					<div class="flex justify-end gap-2 pt-1">
+						<button type="button" class="btn-secondary" onclick={closeAuth}>Отмена</button>
+						<button type="submit" class="btn-primary" disabled={authBusy}>
+							{authBusy ? 'Входим…' : 'Завершить'}
+						</button>
+					</div>
+				</form>
+			{/if}
+		</div>
+	</div>
+{/if}

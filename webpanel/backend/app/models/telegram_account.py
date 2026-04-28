@@ -37,6 +37,16 @@ class TelegramAccount(SQLModel, table=True):
         description="Absolute or repo-relative path to the Telethon .session file.",
     )
 
+    api_id: int | None = Field(
+        default=None,
+        description="Telegram application API_ID used for this session (https://my.telegram.org).",
+    )
+    api_hash: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Telegram application API_HASH. Never returned to the client (write-only).",
+    )
+
     is_shared: bool = Field(
         default=False,
         description="When true, all panel users may select this account when launching jobs.",
