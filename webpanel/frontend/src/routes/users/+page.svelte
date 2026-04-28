@@ -67,102 +67,129 @@
 		}
 	}
 
+	function initial(username: string): string {
+		return username.slice(0, 1).toUpperCase();
+	}
+
 	$effect(() => {
 		refresh();
 	});
 </script>
 
-<div class="mx-auto max-w-4xl space-y-6">
-	<div>
-		<h1 class="text-2xl font-semibold">Пользователи</h1>
-		<p class="mt-1 text-sm text-slate-500">
+<div class="space-y-6">
+	<header class="flex flex-col gap-1">
+		<p class="text-xs font-medium uppercase tracking-wider text-sky-600 dark:text-sky-400">
+			Доступ
+		</p>
+		<h1 class="text-2xl font-semibold tracking-tight">Пользователи</h1>
+		<p class="text-sm text-slate-500 dark:text-slate-400">
 			Все пользователи равноправны. Удалить последнего или самого себя нельзя.
 		</p>
-	</div>
+	</header>
 
-	<form
-		onsubmit={handleCreate}
-		class="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
-	>
-		<label class="flex-1 min-w-[160px] space-y-1 text-sm">
-			<span class="text-slate-700 dark:text-slate-300">Логин</span>
-			<input
-				type="text"
-				required
-				minlength="3"
-				bind:value={newUsername}
-				class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-950"
-			/>
-		</label>
-		<label class="flex-1 min-w-[200px] space-y-1 text-sm">
-			<span class="text-slate-700 dark:text-slate-300">Пароль</span>
-			<input
-				type="password"
-				required
-				minlength="8"
-				bind:value={newPassword}
-				class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-950"
-			/>
-		</label>
-		<button
-			type="submit"
-			disabled={submitting}
-			class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700 disabled:opacity-50"
-		>
-			{submitting ? 'Создаём…' : 'Добавить'}
-		</button>
+	<form onsubmit={handleCreate} class="card p-4">
+		<div class="flex flex-wrap items-end gap-3">
+			<label class="min-w-[180px] flex-1 space-y-1.5 text-sm">
+				<span class="font-medium text-slate-700 dark:text-slate-300">Логин</span>
+				<input
+					type="text"
+					required
+					minlength="3"
+					bind:value={newUsername}
+					placeholder="alice"
+					class="input"
+				/>
+			</label>
+			<label class="min-w-[220px] flex-1 space-y-1.5 text-sm">
+				<span class="font-medium text-slate-700 dark:text-slate-300">Пароль</span>
+				<input
+					type="password"
+					required
+					minlength="8"
+					bind:value={newPassword}
+					placeholder="минимум 8 символов"
+					class="input"
+				/>
+			</label>
+			<button type="submit" disabled={submitting} class="btn-primary">
+				{submitting ? 'Создаём…' : 'Добавить'}
+			</button>
+		</div>
 		{#if formError}
-			<p class="w-full text-sm text-rose-600">{formError}</p>
+			<div class="banner-error mt-3">
+				<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+					<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+				</svg>
+				<span>{formError}</span>
+			</div>
 		{/if}
 	</form>
 
-	<div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-		<table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
-			<thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+	<div class="table-wrap overflow-x-auto">
+		<table class="table-base">
+			<thead>
 				<tr>
-					<th class="px-4 py-2">ID</th>
-					<th class="px-4 py-2">Логин</th>
-					<th class="px-4 py-2">Активен</th>
-					<th class="px-4 py-2">Создан</th>
-					<th class="px-4 py-2 text-right">Действия</th>
+					<th class="w-12">ID</th>
+					<th>Логин</th>
+					<th>Активен</th>
+					<th>Создан</th>
+					<th class="text-right">Действия</th>
 				</tr>
 			</thead>
-			<tbody class="divide-y divide-slate-200 dark:divide-slate-800">
+			<tbody class="divide-y divide-slate-100 dark:divide-slate-800">
 				{#if loading && users.length === 0}
-					<tr><td class="px-4 py-3 text-slate-500" colspan="5">Загрузка…</td></tr>
+					<tr><td class="text-slate-500" colspan="5">Загрузка…</td></tr>
 				{:else if users.length === 0}
-					<tr><td class="px-4 py-3 text-slate-500" colspan="5">Нет пользователей</td></tr>
+					<tr><td class="text-slate-500" colspan="5">Нет пользователей</td></tr>
 				{/if}
 				{#each users as user (user.id)}
 					<tr>
-						<td class="px-4 py-2 font-mono text-xs text-slate-500">{user.id}</td>
-						<td class="px-4 py-2 font-medium">{user.username}</td>
-						<td class="px-4 py-2">
-							<span
-								class="inline-block rounded-full px-2 py-0.5 text-xs {user.is_active
-									? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300'
-									: 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}"
-							>
-								{user.is_active ? 'активен' : 'выключен'}
-							</span>
+						<td class="font-mono text-xs text-slate-500">{user.id}</td>
+						<td>
+							<div class="flex items-center gap-2.5">
+								<span
+									class="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 text-[11px] font-semibold text-white"
+									aria-hidden="true"
+								>
+									{initial(user.username)}
+								</span>
+								<span class="font-medium">
+									{user.username}
+									{#if user.id === auth.user?.id}
+										<span class="ml-1 text-xs font-normal text-slate-400">(вы)</span>
+									{/if}
+								</span>
+							</div>
 						</td>
-						<td class="px-4 py-2 text-xs text-slate-500">
+						<td>
+							{#if user.is_active}
+								<span class="pill-green">
+									<span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+									активен
+								</span>
+							{:else}
+								<span class="pill-slate">
+									<span class="h-1.5 w-1.5 rounded-full bg-slate-400" aria-hidden="true"></span>
+									выключен
+								</span>
+							{/if}
+						</td>
+						<td class="text-xs text-slate-500">
 							{new Date(user.created_at).toLocaleString()}
 						</td>
-						<td class="px-4 py-2 text-right space-x-2">
-							<button
-								class="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-								onclick={() => toggleActive(user)}
-							>
-								{user.is_active ? 'Выключить' : 'Включить'}
-							</button>
-							<button
-								class="rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-40 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
-								disabled={user.id === auth.user?.id}
-								onclick={() => deleteUser(user)}
-							>
-								Удалить
-							</button>
+						<td class="text-right">
+							<div class="inline-flex gap-2">
+								<button class="btn-secondary btn-sm" onclick={() => toggleActive(user)}>
+									{user.is_active ? 'Выключить' : 'Включить'}
+								</button>
+								<button
+									class="btn-danger btn-sm"
+									disabled={user.id === auth.user?.id}
+									onclick={() => deleteUser(user)}
+								>
+									Удалить
+								</button>
+							</div>
 						</td>
 					</tr>
 				{/each}
@@ -171,8 +198,11 @@
 	</div>
 
 	{#if errorMessage}
-		<p class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-300">
-			{errorMessage}
-		</p>
+		<div class="banner-error">
+			<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+				<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+			</svg>
+			<span>{errorMessage}</span>
+		</div>
 	{/if}
 </div>
