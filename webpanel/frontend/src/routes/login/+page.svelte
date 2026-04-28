@@ -36,49 +36,81 @@
 	}
 </script>
 
-<div class="flex min-h-screen items-center justify-center bg-slate-100 px-4 dark:bg-slate-950">
+<div class="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
+	<div
+		class="pointer-events-none absolute -top-32 -right-24 h-80 w-80 rounded-full bg-sky-300/40 blur-3xl
+			dark:bg-sky-700/30"
+		aria-hidden="true"
+	></div>
+	<div
+		class="pointer-events-none absolute -bottom-32 -left-24 h-80 w-80 rounded-full bg-indigo-300/40 blur-3xl
+			dark:bg-indigo-800/30"
+		aria-hidden="true"
+	></div>
+
 	<form
 		onsubmit={handleSubmit}
-		class="w-full max-w-sm space-y-5 rounded-lg border border-slate-200 bg-white p-6 shadow-md dark:border-slate-800 dark:bg-slate-900"
+		class="relative w-full max-w-sm space-y-6 rounded-2xl border border-slate-200/70 bg-white/90 p-7 shadow-xl shadow-slate-900/5 backdrop-blur-sm
+			dark:border-slate-800/70 dark:bg-slate-900/90 dark:shadow-black/30"
 	>
-		<div>
-			<h1 class="text-xl font-semibold">Parser Admin</h1>
-			<p class="mt-1 text-sm text-slate-500">Вход в панель</p>
+		<div class="flex flex-col items-center gap-3 text-center">
+			<span
+				class="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-lg font-bold text-white shadow-lg shadow-sky-600/30"
+				aria-hidden="true"
+			>
+				P
+			</span>
+			<div>
+				<h1 class="text-xl font-semibold tracking-tight">Parser Admin</h1>
+				<p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+					Вход в панель управления ботом
+				</p>
+			</div>
 		</div>
 
-		<label class="block space-y-1 text-sm">
-			<span class="text-slate-700 dark:text-slate-300">Логин</span>
-			<input
-				type="text"
-				required
-				autocomplete="username"
-				bind:value={username}
-				class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-950"
-			/>
-		</label>
+		<div class="space-y-4">
+			<label class="block space-y-1.5 text-sm">
+				<span class="font-medium text-slate-700 dark:text-slate-300">Логин</span>
+				<input
+					type="text"
+					required
+					autocomplete="username"
+					bind:value={username}
+					class="input"
+				/>
+			</label>
 
-		<label class="block space-y-1 text-sm">
-			<span class="text-slate-700 dark:text-slate-300">Пароль</span>
-			<input
-				type="password"
-				required
-				autocomplete="current-password"
-				bind:value={password}
-				class="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-950"
-			/>
-		</label>
+			<label class="block space-y-1.5 text-sm">
+				<span class="font-medium text-slate-700 dark:text-slate-300">Пароль</span>
+				<input
+					type="password"
+					required
+					autocomplete="current-password"
+					bind:value={password}
+					class="input"
+				/>
+			</label>
+		</div>
 
 		{#if errorMessage}
-			<p class="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-300">
-				{errorMessage}
-			</p>
+			<div class="banner-error">
+				<svg
+					class="mt-0.5 h-4 w-4 shrink-0"
+					viewBox="0 0 20 20"
+					fill="currentColor"
+					aria-hidden="true"
+				>
+					<path
+						fill-rule="evenodd"
+						d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
+						clip-rule="evenodd"
+					/>
+				</svg>
+				<span>{errorMessage}</span>
+			</div>
 		{/if}
 
-		<button
-			type="submit"
-			disabled={submitting}
-			class="w-full rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-sky-700 disabled:opacity-50"
-		>
+		<button type="submit" disabled={submitting} class="btn-primary w-full">
 			{submitting ? 'Входим…' : 'Войти'}
 		</button>
 	</form>
