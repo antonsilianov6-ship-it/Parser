@@ -34,10 +34,24 @@ LOG_FILE = os.path.join(LOG_DIR, 'parser.log')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels.txt')
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 
-# Настройки Telegram API (по умолчанию, будут перезаписаны из config.json)
+# Настройки Telegram API (по умолчанию, будут перезаписаны из config.json).
+# Web-panel запускает парсер подпроцессом и пробрасывает креды конкретного
+# Telegram-аккаунта через переменные окружения TELEGRAM_API_ID / TELEGRAM_API_HASH —
+# они имеют приоритет над config.json, чтобы один и тот же config.json мог
+# обслуживать запуски с разных Telethon-сессий.
+def _env_api_id() -> Optional[int]:
+    raw = os.environ.get('TELEGRAM_API_ID')
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 TELEGRAM_CONFIG = {
-    'API_ID': None,
-    'API_HASH': None,
+    'API_ID': _env_api_id(),
+    'API_HASH': os.environ.get('TELEGRAM_API_HASH') or None,
     'MAX_CONCURRENT_CONNECTIONS': 1,
     'DELAY_BETWEEN_CHANNELS': 2,
     'RANDOMIZE_DELAY': False,  # Включить рандомизацию задержки между каналами
@@ -171,7 +185,17 @@ def load_config() -> None:
             for section in CONFIG:
                 if section in validated_config:
                     CONFIG[section].update(validated_config[section])
-                    
+
+            # Переменные окружения имеют приоритет над config.json: web-panel
+            # запускает парсер подпроцессом и пробрасывает креды конкретного
+            # Telethon-аккаунта через TELEGRAM_API_ID / TELEGRAM_API_HASH.
+            env_api_id = _env_api_id()
+            if env_api_id is not None:
+                CONFIG['TELEGRAM']['API_ID'] = env_api_id
+            env_api_hash = os.environ.get('TELEGRAM_API_HASH')
+            if env_api_hash:
+                CONFIG['TELEGRAM']['API_HASH'] = env_api_hash
+
             print(f"Конфигурация загружена из {CONFIG_FILE}")
         except Exception as e:
             print(f"Ошибка при загрузке конфигурации из {CONFIG_FILE}: {e}")

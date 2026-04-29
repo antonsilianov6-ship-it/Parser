@@ -18,6 +18,11 @@
 			href: '/telegram-accounts',
 			label: 'Telegram-аккаунты',
 			match: (p) => p.startsWith('/telegram-accounts')
+		},
+		{
+			href: '/jobs',
+			label: 'Задачи',
+			match: (p) => p.startsWith('/jobs')
 		}
 	];
 
