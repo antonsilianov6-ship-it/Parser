@@ -109,6 +109,15 @@ DATABASE_CONFIG = {
     'USE_TRANSACTIONS': True,  # использовать транзакции для батчинга
 }
 
+# Per-user изоляция: web-panel пробрасывает PARSER_DB_PATH в окружение
+# подпроцесса парсера. Применяем env-override сразу на уровне модуля, чтобы
+# он работал даже когда load_config() не вызывается (например, при работе
+# в short-circuit-режиме, когда TELEGRAM_API_ID уже установлен и ленивая
+# проверка `CONFIG['TELEGRAM']['API_ID'] is None` пропускает load_config).
+_env_db_path = os.environ.get('PARSER_DB_PATH')
+if _env_db_path:
+    DATABASE_CONFIG['DB_PATH'] = _env_db_path
+
 # Настройки уведомлений
 NOTIFICATIONS_CONFIG = {
     'ENABLED': False,
@@ -144,6 +153,12 @@ NOTEBOOKLM_CONFIG = {
     'max_retries': 3,
     'retry_delay_base': 2
 }
+
+# Per-user изоляция: web-panel пробрасывает PARSER_PROMPTS_PATH в env. Тот же
+# повод применять override на уровне модуля, что и для PARSER_DB_PATH выше.
+_env_prompts_path = os.environ.get('PARSER_PROMPTS_PATH')
+if _env_prompts_path:
+    NOTEBOOKLM_CONFIG['prompts_config'] = _env_prompts_path
 
 # Настройки автоматизации
 AUTOMATION_CONFIG = {
