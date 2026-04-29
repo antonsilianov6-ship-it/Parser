@@ -1,0 +1,36 @@
+services:
+  parser-panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: parser-panel:latest
+    container_name: parser-panel
+    restart: unless-stopped
+    ports:
+      - "${PANEL_PORT:-8000}:8000"
+    environment:
+      # Required: long random string used to sign JWTs.
+      # Generate with `openssl rand -hex 32` and put it in your .env.
+      PANEL_JWT_SECRET: "${PANEL_JWT_SECRET:?PANEL_JWT_SECRET is required}"
+      PANEL_JWT_ALGORITHM: "${PANEL_JWT_ALGORITHM:-HS256}"
+      PANEL_JWT_ACCESS_TTL_MINUTES: "${PANEL_JWT_ACCESS_TTL_MINUTES:-720}"
+      PANEL_DB_PATH: /app/webpanel/backend/data/panel.db
+      PANEL_FRONTEND_DIR: /app/webpanel/frontend/build
+      # Disable open registration in production. The first admin is created
+      # via a one-time POST /api/users/bootstrap call after first start.
+      PANEL_ALLOW_REGISTRATION: "false"
+    volumes:
+      # Editable parser config — mount host files so /api/parser/config writes persist.
+      - ./config.json:/app/config.json
+      - ./config:/app/config
+      - ./channels.txt:/app/channels.txt
+      # State that must survive container rebuilds.
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./exports:/app/exports
+      # Backend's own SQLite (users / telegram-accounts / jobs metadata).
+      - panel-state:/app/webpanel/backend/data
+
+volumes:
+  panel-state:

@@ -1,0 +1,39 @@
+# Keep the build context small and reproducible.
+.git
+.github
+.idea
+.vscode
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+
+# Frontend artifacts (rebuilt inside the image)
+webpanel/frontend/node_modules
+webpanel/frontend/build
+webpanel/frontend/.svelte-kit
+
+# Backend artifacts
+webpanel/backend/.venv
+webpanel/backend/data
+webpanel/backend/dist
+webpanel/backend/build
+
+# Local-only state — bind-mount these in production
+sessions
+data
+logs
+exports
+
+# Misc
+*.session
+*.session-journal
+.DS_Store
+
+# Never ship local secrets into the build context.
+.env
+.env.*
+!.env.example
