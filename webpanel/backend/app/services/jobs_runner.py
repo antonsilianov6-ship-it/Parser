@@ -27,6 +27,7 @@ from sqlmodel import Session
 from app.db import get_engine
 from app.models.job import Job, JobMode, JobStatus
 from app.models.telegram_account import TelegramAccount
+from app.services import parser_files
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,17 @@ def _build_command(job: Job) -> list[str]:
     return cmd
 
 
-def _build_env(account: TelegramAccount) -> dict[str, str]:
-    """Return a child env with per-slot Telegram credentials patched in."""
+def _build_env(account: TelegramAccount, owner_user_id: int) -> dict[str, str]:
+    """Return a child env wired up for the *job owner's* per-user paths.
+
+    - ``TELEGRAM_API_ID`` / ``TELEGRAM_API_HASH`` come from the chosen slot
+      (which may be a shared slot owned by another user).
+    - ``PARSER_SESSION_PATH`` points at the slot's ``.session`` file.
+    - ``PARSER_CONFIG_PATH`` / ``PARSER_PROMPTS_PATH`` / ``PARSER_CHANNELS_PATH`` /
+      ``PARSER_DB_PATH`` always resolve to the *job owner's* per-user dir, so
+      a user running a parse with someone else's shared session still parses
+      their own channels and writes to their own DB.
+    """
     env = os.environ.copy()
     if account.api_id is not None:
         env["TELEGRAM_API_ID"] = str(account.api_id)
@@ -64,6 +74,13 @@ def _build_env(account: TelegramAccount) -> dict[str, str]:
         env["TELEGRAM_API_HASH"] = account.api_hash
     session_full = project_root() / account.session_path
     env["PARSER_SESSION_PATH"] = str(session_full)
+
+    parser_files.seed_user_dir(owner_user_id)
+    env["PARSER_CONFIG_PATH"] = str(parser_files.config_json_path(owner_user_id))
+    env["PARSER_PROMPTS_PATH"] = str(parser_files.prompts_json_path(owner_user_id))
+    env["PARSER_CHANNELS_PATH"] = str(parser_files.channels_txt_path(owner_user_id))
+    env["PARSER_DB_PATH"] = str(parser_files.parser_db_path(owner_user_id))
+
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 
@@ -93,7 +110,7 @@ async def launch(job_id: int) -> None:
             db.commit()
             return
         cmd = _build_command(job)
-        env = _build_env(account)
+        env = _build_env(account, job.owner_id)
         log_path = Path(job.log_path)
 
     log_path.parent.mkdir(parents=True, exist_ok=True)

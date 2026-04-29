@@ -1,8 +1,10 @@
-"""Read-only access to the parser's SQLite database (``data/parser.db``).
+"""Read-only access to each user's parser SQLite database.
 
-The web panel never writes to this DB — that's the parser's job. We just open
-the file in read-only mode (``mode=ro``) per request, which is safe even if
-the parser is mid-write because SQLite uses WAL by default in the parser.
+Each panel user has an isolated ``parser.db`` under their per-user directory
+(see :mod:`app.services.parser_files`). The web panel never writes to these
+DBs — that's the parser's job. We just open the file in read-only mode
+(``mode=ro``) per request, which is safe even if the parser is mid-write
+because SQLite uses WAL by default in the parser.
 
 Schema is documented in ``src/database/models.py``: at minimum we rely on
 ``messages(channel, message_id, text, date, author, views, forwards, replies,
@@ -16,22 +18,20 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-
-def project_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+from app.services import parser_files
 
 
-def db_path() -> Path:
-    return project_root() / "data" / "parser.db"
+def db_path(user_id: int) -> Path:
+    return parser_files.parser_db_path(user_id)
 
 
-def db_exists() -> bool:
-    return db_path().exists()
+def db_exists(user_id: int) -> bool:
+    return db_path(user_id).exists()
 
 
 @contextmanager
-def _connect():
-    path = db_path()
+def _connect(user_id: int):
+    path = db_path(user_id)
     if not path.exists():
         raise FileNotFoundError(
             f"Parser database not found at {path}. Run a parse job first."
@@ -46,6 +46,7 @@ def _connect():
 
 
 def list_messages(
+    user_id: int,
     *,
     limit: int = 50,
     offset: int = 0,
@@ -75,7 +76,7 @@ def list_messages(
 
     where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-    with _connect() as conn:
+    with _connect(user_id) as conn:
         total = conn.execute(
             f"SELECT COUNT(*) AS c FROM messages {where_sql}", params
         ).fetchone()["c"]
@@ -94,9 +95,9 @@ def list_messages(
     return items, int(total)
 
 
-def list_channels_in_db() -> list[dict[str, Any]]:
+def list_channels_in_db(user_id: int) -> list[dict[str, Any]]:
     """Return distinct channels that have at least one message stored."""
-    with _connect() as conn:
+    with _connect(user_id) as conn:
         rows = conn.execute(
             """
             SELECT channel,
@@ -110,10 +111,10 @@ def list_channels_in_db() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def overview_stats(top: int = 10) -> dict[str, Any]:
+def overview_stats(user_id: int, top: int = 10) -> dict[str, Any]:
     """High-level counters used on the dashboard."""
     top = max(1, min(top, 50))
-    with _connect() as conn:
+    with _connect(user_id) as conn:
         total = conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()["c"]
         channels_count = conn.execute(
             "SELECT COUNT(DISTINCT channel) AS c FROM messages"

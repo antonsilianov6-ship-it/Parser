@@ -210,16 +210,17 @@
 		</p>
 		<h1 class="text-2xl font-semibold tracking-tight">Настройки</h1>
 		<p class="max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-			CRUD для файлов на VPS:
+			CRUD для <strong>ваших</strong> файлов парсера:
 			<code class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] dark:bg-slate-800">
 				config.json
 			</code>,
 			<code class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] dark:bg-slate-800">
-				config/prompts.json
+				prompts.json
 			</code>,
 			<code class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] dark:bg-slate-800">
 				channels.txt
-			</code>. Секреты (API_HASH, NotebookLM password) показываются как
+			</code>. Каждый юзер панели имеет свой набор настроек и свою БД сообщений
+			— ваши изменения видны только вам. Секреты (API_HASH, NotebookLM password) показываются как
 			<code class="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] dark:bg-slate-800">
 				***
 			</code>

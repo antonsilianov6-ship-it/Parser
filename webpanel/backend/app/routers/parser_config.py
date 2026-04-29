@@ -1,4 +1,9 @@
-"""CRUD endpoints for parser-side files: config.json, prompts.json, channels.txt."""
+"""CRUD endpoints for parser-side files: config.json, prompts.json, channels.txt.
+
+Files are scoped per panel user — every endpoint resolves paths inside the
+caller's own ``users/<uid>/`` directory so two panel users have completely
+independent parser configurations.
+"""
 
 from __future__ import annotations
 
@@ -33,10 +38,10 @@ class ChannelsReplacePayload(BaseModel):
 
 
 @router.get("/config")
-def get_config(_: CurrentUser) -> dict[str, Any]:
-    """Return masked config.json contents."""
+def get_config(current_user: CurrentUser) -> dict[str, Any]:
+    """Return masked config.json contents for the calling user."""
     try:
-        return parser_files.read_config()
+        return parser_files.read_config(current_user.id)
     except (OSError, ValueError) as err:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -45,9 +50,9 @@ def get_config(_: CurrentUser) -> dict[str, Any]:
 
 
 @router.put("/config")
-def put_config(payload: ConfigPayload, _: CurrentUser) -> dict[str, Any]:
+def put_config(payload: ConfigPayload, current_user: CurrentUser) -> dict[str, Any]:
     try:
-        return parser_files.write_config(payload.config)
+        return parser_files.write_config(current_user.id, payload.config)
     except ValueError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,9 +66,9 @@ def put_config(payload: ConfigPayload, _: CurrentUser) -> dict[str, Any]:
 
 
 @router.get("/prompts")
-def get_prompts(_: CurrentUser) -> dict[str, Any]:
+def get_prompts(current_user: CurrentUser) -> dict[str, Any]:
     try:
-        return parser_files.read_prompts()
+        return parser_files.read_prompts(current_user.id)
     except (OSError, ValueError) as err:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -72,9 +77,9 @@ def get_prompts(_: CurrentUser) -> dict[str, Any]:
 
 
 @router.put("/prompts")
-def put_prompts(payload: PromptsPayload, _: CurrentUser) -> dict[str, Any]:
+def put_prompts(payload: PromptsPayload, current_user: CurrentUser) -> dict[str, Any]:
     try:
-        return parser_files.write_prompts(payload.prompts)
+        return parser_files.write_prompts(current_user.id, payload.prompts)
     except ValueError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -88,14 +93,16 @@ def put_prompts(payload: PromptsPayload, _: CurrentUser) -> dict[str, Any]:
 
 
 @router.get("/channels", response_model=list[str])
-def get_channels(_: CurrentUser) -> list[str]:
-    return parser_files.read_channels()
+def get_channels(current_user: CurrentUser) -> list[str]:
+    return parser_files.read_channels(current_user.id)
 
 
 @router.put("/channels", response_model=list[str])
-def replace_channels(payload: ChannelsReplacePayload, _: CurrentUser) -> list[str]:
+def replace_channels(
+    payload: ChannelsReplacePayload, current_user: CurrentUser
+) -> list[str]:
     try:
-        return parser_files.write_channels(payload.channels)
+        return parser_files.write_channels(current_user.id, payload.channels)
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
@@ -105,14 +112,14 @@ def replace_channels(payload: ChannelsReplacePayload, _: CurrentUser) -> list[st
     response_model=list[str],
     status_code=status.HTTP_201_CREATED,
 )
-def add_channel(payload: ChannelAddPayload, _: CurrentUser) -> list[str]:
+def add_channel(payload: ChannelAddPayload, current_user: CurrentUser) -> list[str]:
     try:
-        return parser_files.add_channel(payload.url)
+        return parser_files.add_channel(current_user.id, payload.url)
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
 
 
 @router.delete("/channels", response_model=list[str])
-def delete_channel(url: str, _: CurrentUser) -> list[str]:
-    """Remove ``url`` from channels.txt (no-op if absent)."""
-    return parser_files.remove_channel(url)
+def delete_channel(url: str, current_user: CurrentUser) -> list[str]:
+    """Remove ``url`` from the user's channels.txt (no-op if absent)."""
+    return parser_files.remove_channel(current_user.id, url)

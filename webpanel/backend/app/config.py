@@ -26,6 +26,13 @@ class Settings(BaseSettings):
 
     db_path: Path = Field(default=Path("panel.db"))
 
+    user_data_dir: Path | None = Field(
+        default=None,
+        description="Directory holding per-user parser files "
+        "(config.json / prompts.json / channels.txt / parser.db). "
+        "Defaults to '<db_path.parent>/users'.",
+    )
+
     allow_registration: bool = Field(
         default=False,
         description="When true, POST /api/users is open to anonymous callers",
@@ -54,6 +61,13 @@ class Settings(BaseSettings):
     def database_url(self) -> str:
         """Return a SQLAlchemy-compatible URL for the configured SQLite file."""
         return f"sqlite:///{self.db_path}"
+
+    @property
+    def resolved_user_data_dir(self) -> Path:
+        """Per-user directory base, defaulting next to the panel DB."""
+        if self.user_data_dir is not None:
+            return self.user_data_dir
+        return self.db_path.parent / "users"
 
 
 @lru_cache(maxsize=1)

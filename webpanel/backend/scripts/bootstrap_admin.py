@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 from app.db import get_engine, init_db
 from app.models.user import User
 from app.security import hash_password
+from app.services import parser_files
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
 
     init_db()
     with Session(get_engine()) as session:
+        first_ever = session.exec(select(User)).first() is None
         existing = session.exec(select(User).where(User.username == args.username)).first()
         if existing is None:
             user = User(
@@ -54,12 +56,19 @@ def main(argv: list[str] | None = None) -> int:
             session.commit()
             session.refresh(user)
             print(f"created user id={user.id} username={user.username!r}")
+            if user.id is not None:
+                # The very first user inherits any pre-existing legacy
+                # config.json / channels.txt that already lives in the repo
+                # root; subsequent users start from default templates.
+                parser_files.seed_user_dir(user.id, copy_legacy=first_ever)
         else:
             existing.password_hash = hash_password(password)
             existing.is_active = True
             existing.updated_at = datetime.now(tz=UTC)
             session.add(existing)
             session.commit()
+            if existing.id is not None:
+                parser_files.seed_user_dir(existing.id)
             print(f"updated user id={existing.id} username={existing.username!r}")
     return 0
 
