@@ -40,6 +40,32 @@ def init_db() -> None:
 
     SQLModel.metadata.create_all(get_engine())
     _apply_additive_migrations()
+    _seed_existing_users()
+
+
+def _seed_existing_users() -> None:
+    """Make sure every panel user has an isolated parser data directory.
+
+    Re-run on every startup; no-op once the per-user dirs already exist. The
+    smallest user id (typically the bootstrap admin) gets the legacy global
+    files copied from the repo root if their own dir is still empty, so an
+    upgrade from a pre-PR-#9 install doesn't lose ``config.json`` / ``channels.txt``.
+    """
+    # Imported here to avoid a circular import (services -> config -> db).
+    from sqlmodel import Session, select
+
+    from app.models.user import User
+    from app.services import parser_files
+
+    with Session(get_engine()) as session:
+        users = list(session.exec(select(User).order_by(User.id)))
+    if not users:
+        return
+    first_id = min((u.id for u in users if u.id is not None), default=None)
+    for user in users:
+        if user.id is None:
+            continue
+        parser_files.seed_user_dir(user.id, copy_legacy=(user.id == first_id))
 
 
 def _apply_additive_migrations() -> None:

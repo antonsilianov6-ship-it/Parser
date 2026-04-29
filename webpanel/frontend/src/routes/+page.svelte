@@ -73,7 +73,7 @@
 		{
 			href: '/settings',
 			title: 'Настройки',
-			description: 'CRUD для config.json, prompts.json и channels.txt.',
+			description: 'Ваш персональный config.json, prompts.json и channels.txt.',
 			accent: 'from-amber-500 to-orange-600',
 			icon: 'settings'
 		}

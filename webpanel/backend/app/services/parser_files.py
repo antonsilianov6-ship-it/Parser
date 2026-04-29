@@ -1,10 +1,17 @@
 """File-IO service for parser-side config files (``config.json``,
-``config/prompts.json``, ``channels.txt``).
+``prompts.json``, ``channels.txt``).
 
-The web panel exposes these as CRUD-able resources so the user can edit them
-without SSHing into the VPS. Secret-looking JSON paths in ``config.json``
-(API hashes, NotebookLM password) are masked as ``***`` on read; on write the
-sentinel ``***`` means *preserve the previously-stored value*.
+Files are **per-user**: each panel user has an isolated directory under
+``settings.resolved_user_data_dir / <user_id> /`` and the web panel only ever
+reads or writes within that directory for the calling user. The parser
+subprocess receives ``PARSER_CONFIG_PATH`` / ``PARSER_PROMPTS_PATH`` /
+``PARSER_CHANNELS_PATH`` / ``PARSER_DB_PATH`` env vars resolved against the
+job owner's directory, so two users running parses in parallel never share
+state.
+
+Secret-looking JSON paths in ``config.json`` (API hashes, NotebookLM password)
+are masked as ``***`` on read; on write the sentinel ``***`` means *preserve
+the previously-stored value*.
 """
 
 from __future__ import annotations
@@ -12,8 +19,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
+
+from app.config import get_settings
 
 SECRET_SENTINEL = "***"
 
@@ -26,19 +36,51 @@ SECRET_PATHS: tuple[tuple[str, str], ...] = (
 
 
 def project_root() -> Path:
-    """Path to the parser repo root (where ``config.json`` lives)."""
+    """Path to the parser repo root (where the legacy config.json lives)."""
     return Path(__file__).resolve().parents[4]
 
 
-def config_json_path() -> Path:
+def user_dir(user_id: int) -> Path:
+    """Per-user directory holding {config.json, prompts.json, channels.txt, parser.db}.
+
+    Created on first access. Lives next to the panel's own SQLite by default
+    (``<panel_db>.parent/users/<uid>/``) but can be overridden via the
+    ``PANEL_USER_DATA_DIR`` env var.
+    """
+    base = get_settings().resolved_user_data_dir
+    path = base / str(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def config_json_path(user_id: int) -> Path:
+    return user_dir(user_id) / "config.json"
+
+
+def prompts_json_path(user_id: int) -> Path:
+    return user_dir(user_id) / "prompts.json"
+
+
+def channels_txt_path(user_id: int) -> Path:
+    return user_dir(user_id) / "channels.txt"
+
+
+def parser_db_path(user_id: int) -> Path:
+    return user_dir(user_id) / "parser.db"
+
+
+# Legacy paths in the repo root. Used as one-time templates when seeding a new
+# user's directory; the parser itself no longer reads them when run from the
+# web panel because jobs_runner overrides them via environment variables.
+def _legacy_config_path() -> Path:
     return project_root() / "config.json"
 
 
-def prompts_json_path() -> Path:
+def _legacy_prompts_path() -> Path:
     return project_root() / "config" / "prompts.json"
 
 
-def channels_txt_path() -> Path:
+def _legacy_channels_path() -> Path:
     return project_root() / "channels.txt"
 
 
@@ -77,17 +119,54 @@ def _default_config() -> dict[str, Any]:
     }
 
 
+def seed_user_dir(user_id: int, *, copy_legacy: bool = False) -> Path:
+    """Ensure the per-user directory exists and contains baseline files.
+
+    Missing files are written; existing files are never touched. When
+    ``copy_legacy`` is true and a legacy file in the repo root is present,
+    it is copied as-is into the user's directory (used during the one-time
+    migration from the old global setup).
+    """
+    udir = user_dir(user_id)
+
+    cfg_path = config_json_path(user_id)
+    if not cfg_path.exists():
+        legacy = _legacy_config_path()
+        if copy_legacy and legacy.exists():
+            shutil.copy2(legacy, cfg_path)
+        else:
+            _write_json_atomically(cfg_path, _default_config())
+
+    prompts_path = prompts_json_path(user_id)
+    if not prompts_path.exists():
+        legacy_prompts = _legacy_prompts_path()
+        if copy_legacy and legacy_prompts.exists():
+            shutil.copy2(legacy_prompts, prompts_path)
+        else:
+            _write_json_atomically(prompts_path, {"prompts": {}, "defaults": {}})
+
+    ch_path = channels_txt_path(user_id)
+    if not ch_path.exists():
+        legacy_channels = _legacy_channels_path()
+        if copy_legacy and legacy_channels.exists():
+            shutil.copy2(legacy_channels, ch_path)
+        else:
+            ch_path.write_text("", encoding="utf-8")
+
+    return udir
+
+
 # ----- config.json --------------------------------------------------------
 
 
-def read_config() -> dict[str, Any]:
-    """Read ``config.json`` (or return defaults) and mask secret fields."""
-    raw = _read_config_raw()
+def read_config(user_id: int) -> dict[str, Any]:
+    """Read the user's ``config.json`` (or return defaults) and mask secrets."""
+    raw = _read_config_raw(user_id)
     return mask_secrets(raw)
 
 
-def _read_config_raw() -> dict[str, Any]:
-    path = config_json_path()
+def _read_config_raw(user_id: int) -> dict[str, Any]:
+    path = config_json_path(user_id)
     if not path.exists():
         return _default_config()
     with path.open(encoding="utf-8") as fh:
@@ -97,14 +176,14 @@ def _read_config_raw() -> dict[str, Any]:
     return data
 
 
-def write_config(payload: dict[str, Any]) -> dict[str, Any]:
+def write_config(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     """Persist a new ``config.json`` after merging masked secrets back in."""
     if not isinstance(payload, dict):
         raise ValueError("config payload must be a JSON object")
-    existing = _read_config_raw()
+    existing = _read_config_raw(user_id)
     merged = merge_secrets(payload, existing)
     _validate_config_shape(merged)
-    _write_json_atomically(config_json_path(), merged)
+    _write_json_atomically(config_json_path(user_id), merged)
     return mask_secrets(merged)
 
 
@@ -150,8 +229,8 @@ def _validate_config_shape(cfg: dict[str, Any]) -> None:
 # ----- prompts.json -------------------------------------------------------
 
 
-def read_prompts() -> dict[str, Any]:
-    path = prompts_json_path()
+def read_prompts(user_id: int) -> dict[str, Any]:
+    path = prompts_json_path(user_id)
     if not path.exists():
         return {"prompts": {}, "defaults": {}}
     with path.open(encoding="utf-8") as fh:
@@ -161,20 +240,20 @@ def read_prompts() -> dict[str, Any]:
     return data
 
 
-def write_prompts(payload: dict[str, Any]) -> dict[str, Any]:
+def write_prompts(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("prompts payload must be a JSON object")
     if "prompts" not in payload or not isinstance(payload["prompts"], dict):
         raise ValueError("prompts.json must contain a 'prompts' object")
-    _write_json_atomically(prompts_json_path(), payload)
+    _write_json_atomically(prompts_json_path(user_id), payload)
     return payload
 
 
 # ----- channels.txt -------------------------------------------------------
 
 
-def read_channels() -> list[str]:
-    path = channels_txt_path()
+def read_channels(user_id: int) -> list[str]:
+    path = channels_txt_path(user_id)
     if not path.exists():
         return []
     return [
@@ -184,7 +263,7 @@ def read_channels() -> list[str]:
     ]
 
 
-def write_channels(channels: list[str]) -> list[str]:
+def write_channels(user_id: int, channels: list[str]) -> list[str]:
     """Replace the whole channel list (deduplicated, order preserved)."""
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -198,27 +277,27 @@ def write_channels(channels: list[str]) -> list[str]:
             continue
         seen.add(value)
         cleaned.append(value)
-    path = channels_txt_path()
+    path = channels_txt_path(user_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(cleaned) + ("\n" if cleaned else ""), encoding="utf-8")
     return cleaned
 
 
-def add_channel(value: str) -> list[str]:
+def add_channel(user_id: int, value: str) -> list[str]:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("channel must be a non-empty string")
-    current = read_channels()
+    current = read_channels(user_id)
     candidate = value.strip()
     if candidate in current:
         return current
     current.append(candidate)
-    return write_channels(current)
+    return write_channels(user_id, current)
 
 
-def remove_channel(value: str) -> list[str]:
-    current = read_channels()
+def remove_channel(user_id: int, value: str) -> list[str]:
+    current = read_channels(user_id)
     target = (value or "").strip()
-    return write_channels([c for c in current if c != target])
+    return write_channels(user_id, [c for c in current if c != target])
 
 
 # ----- helpers ------------------------------------------------------------

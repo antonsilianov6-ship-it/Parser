@@ -32,9 +32,15 @@ cd Parser
 
 ## 3. Prepare host files that get bind-mounted
 
+Each panel user has an **isolated** set of parser files (`config.json`,
+`prompts.json`, `channels.txt`, `parser.db`) under the panel's named
+`panel-state` volume. The files in the repo root that get bind-mounted are
+only used as a **one-time seed** for the very first admin: their contents are
+copied into the admin's per-user dir at bootstrap, and after that point the
+panel always reads/writes the per-user files.
+
 Docker bind-mounts that point at non-existent paths become empty directories,
-which is **not** what we want for `config.json` and `channels.txt`. Create
-them up-front:
+so create them up-front (they end up empty for fresh installs, which is fine):
 
 ```bash
 mkdir -p sessions data logs exports config
@@ -118,9 +124,9 @@ docker compose build
 docker compose up -d
 ```
 
-State you care about (`sessions/`, `data/parser.db`, the panel's own
-`panel-state` volume, your edited `config.json` / `channels.txt`) survives
-rebuilds because it lives outside the image.
+State you care about (`sessions/`, the panel's own `panel-state` volume which
+holds every user's `config.json` / `prompts.json` / `channels.txt` /
+`parser.db`) survives rebuilds because it lives outside the image.
 
 ## 10. Putting a reverse proxy in front
 
@@ -142,7 +148,7 @@ Let's Encrypt cert automatically.
 | --- | --- |
 | `PANEL_JWT_SECRET is required` on `up` | You forgot to populate `.env` from `.env.example`. |
 | `/login` 404 | The frontend wasn't built into the image — rerun `docker compose build` (the cache is fine). |
-| `data/parser.db not found` on `/messages` | Run a `parse` job first; the parser creates the DB on first write. |
+| `Parser DB not found for this user` on `/messages` | Run a `parse` job as that user first; the parser creates the per-user DB on first write. |
 | Telegram auth gives `FloodWait` | Telegram is throttling you — wait the suggested seconds and retry. |
 | Container restarts on boot | `docker compose logs parser-panel` will show the trace; usually a missing `.env` value. |
 

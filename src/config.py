@@ -31,8 +31,17 @@ SESSION_PATH = os.environ.get(
 )
 CACHE_FILE = os.path.join(CACHE_DIR, 'cache.json')
 LOG_FILE = os.path.join(LOG_DIR, 'parser.log')
-CHANNELS_FILE = os.path.join(BASE_DIR, 'channels.txt')
-CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
+# Web-panel изолирует настройки и БД для каждого пользователя; jobs-runner
+# пробрасывает per-user пути через переменные окружения. Если они не заданы,
+# используются дефолтные глобальные пути в корне репо (как до PR #9).
+CHANNELS_FILE = os.environ.get(
+    'PARSER_CHANNELS_PATH',
+    os.path.join(BASE_DIR, 'channels.txt'),
+)
+CONFIG_FILE = os.environ.get(
+    'PARSER_CONFIG_PATH',
+    os.path.join(BASE_DIR, 'config.json'),
+)
 
 # Настройки Telegram API (по умолчанию, будут перезаписаны из config.json).
 # Web-panel запускает парсер подпроцессом и пробрасывает креды конкретного
@@ -195,6 +204,16 @@ def load_config() -> None:
             env_api_hash = os.environ.get('TELEGRAM_API_HASH')
             if env_api_hash:
                 CONFIG['TELEGRAM']['API_HASH'] = env_api_hash
+
+            # Per-user изоляция: web-panel пробрасывает PARSER_DB_PATH /
+            # PARSER_PROMPTS_PATH чтобы каждый юзер писал в свою БД и читал
+            # свой prompts.json, не пересекаясь с другими юзерами.
+            env_db_path = os.environ.get('PARSER_DB_PATH')
+            if env_db_path:
+                CONFIG['DATABASE']['DB_PATH'] = env_db_path
+            env_prompts = os.environ.get('PARSER_PROMPTS_PATH')
+            if env_prompts:
+                CONFIG['NOTEBOOKLM']['prompts_config'] = env_prompts
 
             print(f"Конфигурация загружена из {CONFIG_FILE}")
         except Exception as e:

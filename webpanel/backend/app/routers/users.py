@@ -16,6 +16,7 @@ from app.deps import CurrentUser, SessionDep
 from app.models.user import User
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 from app.security import hash_password
+from app.services import parser_files
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -51,7 +52,13 @@ def bootstrap_user(payload: UserCreate, session: SessionDep) -> User:
             status_code=status.HTTP_409_CONFLICT,
             detail="Panel already has at least one user; use POST /api/users instead",
         )
-    return _create_user(session, payload)
+    user = _create_user(session, payload)
+    # First-ever user inherits the legacy global config.json / prompts.json /
+    # channels.txt that may already live in the repo root from a pre-PR-#9
+    # install. Subsequent users get fresh templates from _create_user above.
+    if user.id is not None:
+        parser_files.seed_user_dir(user.id, copy_legacy=True)
+    return user
 
 
 @router.post(
@@ -67,7 +74,10 @@ def create_user(
 ) -> User:
     """Create a new user. Requires an authenticated caller."""
     del current_user
-    return _create_user(session, payload)
+    user = _create_user(session, payload)
+    if user.id is not None:
+        parser_files.seed_user_dir(user.id)
+    return user
 
 
 @router.get("", response_model=list[UserRead])
