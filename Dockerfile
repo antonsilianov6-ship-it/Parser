@@ -58,9 +58,7 @@ COPY channels.txt ./
 COPY --from=frontend /app/webpanel/frontend/build /app/webpanel/frontend/build
 
 ENV PANEL_FRONTEND_DIR=/app/webpanel/frontend/build \
-    PANEL_DATA_DIR=/app/webpanel/backend/data \
-    PARSER_SESSION_DIR=/app/sessions \
-    PARSER_LOG_DIR=/app/logs
+    PANEL_DB_PATH=/app/webpanel/backend/data/panel.db
 
 # Volumes that should outlive the container.
 RUN mkdir -p /app/sessions /app/data /app/logs /app/exports /app/webpanel/backend/data
