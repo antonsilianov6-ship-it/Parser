@@ -6,7 +6,7 @@
 		title: string;
 		description: string;
 		accent: string;
-		icon: 'users' | 'telegram' | 'jobs';
+		icon: 'users' | 'telegram' | 'jobs' | 'settings';
 	};
 
 	const cards: Card[] = [
@@ -30,6 +30,13 @@
 			description: 'Запуск парсера и просмотр логов в реальном времени.',
 			accent: 'from-fuchsia-500 to-rose-600',
 			icon: 'jobs'
+		},
+		{
+			href: '/settings',
+			title: 'Настройки',
+			description: 'CRUD для config.json, prompts.json и channels.txt.',
+			accent: 'from-amber-500 to-orange-600',
+			icon: 'settings'
 		}
 	];
 </script>
@@ -75,9 +82,14 @@
 							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
 								<path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.8.8l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.4-5.2 9.4-8.5c.4-.4-.1-.6-.6-.2L5.8 13l-5-1.6c-1.1-.3-1.1-1 .2-1.6L20.4 2.7c.9-.3 1.7.2 1.5 1.6Z" />
 							</svg>
-						{:else}
+						{:else if card.icon === 'jobs'}
 							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<polygon points="5 3 19 12 5 21 5 3" />
+							</svg>
+						{:else}
+							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<circle cx="12" cy="12" r="3" />
+								<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
 							</svg>
 						{/if}
 					</div>

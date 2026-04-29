@@ -23,6 +23,11 @@
 			href: '/jobs',
 			label: 'Задачи',
 			match: (p) => p.startsWith('/jobs')
+		},
+		{
+			href: '/settings',
+			label: 'Настройки',
+			match: (p) => p.startsWith('/settings')
 		}
 	];
 
