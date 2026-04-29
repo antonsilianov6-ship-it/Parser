@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { api, ApiError } from '$lib/api';
 	import { auth } from '$lib/stores/auth.svelte';
 
 	type Card = {
@@ -6,8 +8,38 @@
 		title: string;
 		description: string;
 		accent: string;
-		icon: 'users' | 'telegram' | 'jobs' | 'settings';
+		icon: 'users' | 'telegram' | 'jobs' | 'settings' | 'messages';
 	};
+
+	type Stats = {
+		total_messages: number;
+		channels_count: number;
+		latest_message_at: string | null;
+		top_channels: Array<{ channel: string; messages: number }>;
+		db_present: boolean;
+	};
+
+	let stats = $state<Stats | null>(null);
+	let statsError = $state<string | null>(null);
+
+	onMount(async () => {
+		try {
+			stats = await api<Stats>('/api/parser/stats');
+		} catch (error) {
+			statsError = error instanceof ApiError ? error.message : String(error);
+		}
+	});
+
+	function formatNumber(n: number): string {
+		return new Intl.NumberFormat('ru-RU').format(n);
+	}
+
+	function formatDate(value: string | null): string {
+		if (!value) return '—';
+		const d = new Date(value.replace(' ', 'T') + (value.includes('T') ? '' : 'Z'));
+		if (Number.isNaN(d.getTime())) return value;
+		return d.toLocaleString('ru-RU');
+	}
 
 	const cards: Card[] = [
 		{
@@ -30,6 +62,13 @@
 			description: 'Запуск парсера и просмотр логов в реальном времени.',
 			accent: 'from-fuchsia-500 to-rose-600',
 			icon: 'jobs'
+		},
+		{
+			href: '/messages',
+			title: 'Сообщения',
+			description: 'Просмотр спарсенных сообщений с фильтрами и поиском.',
+			accent: 'from-violet-500 to-purple-600',
+			icon: 'messages'
 		},
 		{
 			href: '/settings',
@@ -86,6 +125,10 @@
 							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<polygon points="5 3 19 12 5 21 5 3" />
 							</svg>
+						{:else if card.icon === 'messages'}
+							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+							</svg>
 						{:else}
 							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<circle cx="12" cy="12" r="3" />
@@ -118,19 +161,59 @@
 		{/each}
 	</section>
 
-	<section
-		class="rounded-2xl border border-dashed border-slate-300/80 bg-white/40 p-5 text-sm text-slate-500 backdrop-blur-sm
-			dark:border-slate-700/80 dark:bg-slate-900/30 dark:text-slate-400"
-	>
-		<div class="flex items-start gap-3">
-			<svg class="mt-0.5 h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-				<path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0Zm-1 3a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 9Z" clip-rule="evenodd" />
-			</svg>
-			<p>
-				В следующих итерациях здесь появятся: запуск парсинга/автоматизации, живые логи,
-				просмотр сообщений из базы, редактор <code class="rounded bg-slate-200 px-1 py-0.5 font-mono text-xs dark:bg-slate-800">config.json</code>,
-				расписание и список экспортов.
-			</p>
+	<section class="space-y-3">
+		<div class="flex items-baseline justify-between">
+			<h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+				Парсер — статистика
+			</h2>
+			<a class="text-xs text-sky-600 hover:underline dark:text-sky-400" href="/messages">
+				Открыть сообщения →
+			</a>
 		</div>
+		{#if statsError}
+			<div class="banner-error">{statsError}</div>
+		{:else if stats === null}
+			<div class="text-sm text-slate-500">Загрузка…</div>
+		{:else if !stats.db_present}
+			<div class="card p-5 text-sm text-slate-500">
+				База данных <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">data/parser.db</code> ещё не создана.
+				Запустите job в режиме <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">parse</code>,
+				чтобы появились данные.
+			</div>
+		{:else}
+			<div class="grid gap-4 sm:grid-cols-3">
+				<div class="card p-4">
+					<p class="text-xs uppercase tracking-wider text-slate-500">Сообщений всего</p>
+					<p class="mt-2 text-2xl font-semibold tabular-nums">
+						{formatNumber(stats.total_messages)}
+					</p>
+				</div>
+				<div class="card p-4">
+					<p class="text-xs uppercase tracking-wider text-slate-500">Каналов в базе</p>
+					<p class="mt-2 text-2xl font-semibold tabular-nums">
+						{formatNumber(stats.channels_count)}
+					</p>
+				</div>
+				<div class="card p-4">
+					<p class="text-xs uppercase tracking-wider text-slate-500">Последнее сообщение</p>
+					<p class="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+						{formatDate(stats.latest_message_at)}
+					</p>
+				</div>
+			</div>
+			{#if stats.top_channels.length > 0}
+				<div class="card p-4">
+					<p class="text-xs uppercase tracking-wider text-slate-500">Топ каналов</p>
+					<ul class="mt-2 space-y-1.5 text-sm">
+						{#each stats.top_channels.slice(0, 5) as row (row.channel)}
+							<li class="flex items-center justify-between font-mono">
+								<span class="truncate text-slate-700 dark:text-slate-300">{row.channel}</span>
+								<span class="tabular-nums text-slate-500">{formatNumber(row.messages)}</span>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+		{/if}
 	</section>
 </div>

@@ -11,7 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db import init_db
-from app.routers import auth, health, jobs, parser_config, telegram_accounts, users
+from app.routers import (
+    auth,
+    health,
+    jobs,
+    parser_config,
+    parser_db,
+    telegram_accounts,
+    users,
+)
 from app.static import mount_frontend
 
 
@@ -44,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(telegram_accounts.router)
     app.include_router(jobs.router)
     app.include_router(parser_config.router)
+    app.include_router(parser_db.router)
 
     if settings.frontend_dir is not None:
         mount_frontend(app, settings.frontend_dir)
