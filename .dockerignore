@@ -32,3 +32,8 @@ exports
 *.session
 *.session-journal
 .DS_Store
+
+# Never ship local secrets into the build context.
+.env
+.env.*
+!.env.example
