@@ -6,7 +6,7 @@
 		title: string;
 		description: string;
 		accent: string;
-		icon: 'users' | 'telegram';
+		icon: 'users' | 'telegram' | 'jobs';
 	};
 
 	const cards: Card[] = [
@@ -20,9 +20,16 @@
 		{
 			href: '/telegram-accounts',
 			title: 'Telegram-аккаунты',
-			description: 'Слоты под Telethon-сессии. Реальный логин добавляется в следующем PR.',
+			description: 'Авторизованные Telethon-сессии для запусков парсера.',
 			accent: 'from-emerald-500 to-teal-600',
 			icon: 'telegram'
+		},
+		{
+			href: '/jobs',
+			title: 'Задачи',
+			description: 'Запуск парсера и просмотр логов в реальном времени.',
+			accent: 'from-fuchsia-500 to-rose-600',
+			icon: 'jobs'
 		}
 	];
 </script>
@@ -64,9 +71,13 @@
 								<path d="M23 21v-2a4 4 0 0 0-3-3.87" />
 								<path d="M16 3.13a4 4 0 0 1 0 7.75" />
 							</svg>
-						{:else}
+						{:else if card.icon === 'telegram'}
 							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
 								<path d="M21.9 4.3 18.7 19.4c-.2 1-.9 1.3-1.8.8l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.4-5.2 9.4-8.5c.4-.4-.1-.6-.6-.2L5.8 13l-5-1.6c-1.1-.3-1.1-1 .2-1.6L20.4 2.7c.9-.3 1.7.2 1.5 1.6Z" />
+							</svg>
+						{:else}
+							<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polygon points="5 3 19 12 5 21 5 3" />
 							</svg>
 						{/if}
 					</div>

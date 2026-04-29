@@ -36,3 +36,21 @@ export interface TokenResponse {
 	token_type: string;
 	expires_in: number;
 }
+
+export type JobMode = 'parse' | 'export' | 'stats';
+export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface Job {
+	id: number;
+	owner_id: number;
+	telegram_account_id: number;
+	mode: JobMode;
+	channel: string | null;
+	export_format: string | null;
+	status: JobStatus;
+	pid: number | null;
+	exit_code: number | null;
+	created_at: string;
+	started_at: string | null;
+	ended_at: string | null;
+}
