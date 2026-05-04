@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 _running: dict[int, asyncio.subprocess.Process] = {}
+# Tracks in-flight ``await asyncio.sleep(...)`` tasks during a
+# ``floodwait_short`` rotation so that ``cancel()`` can interrupt them
+# and ``is_running()`` keeps returning True (which keeps the SSE log
+# stream open across the retry gap).
+_rotation_sleeps: dict[int, asyncio.Task[None]] = {}
 
 
 def project_root() -> Path:
@@ -298,36 +303,87 @@ async def _maybe_rotate(job_id: int) -> str | None:
         db.commit()
 
     if delay:
-        await asyncio.sleep(delay)
-    # Await directly: ``launch`` returns once the new subprocess has been
-    # spawned (the long-lived wait is in another ``_finalize_in_background``
-    # task), and we're already running inside a background task, so this
+        # Run the wait as a tracked task so ``cancel()`` can interrupt
+        # it and ``is_running()`` can still report True while we wait.
+        sleep_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(delay))
+        _rotation_sleeps[job_id] = sleep_task
+        try:
+            await sleep_task
+        except asyncio.CancelledError:
+            # ``cancel()`` cancelled the sleep — bail out before
+            # relaunching. ``cancel()`` already flipped the status to
+            # ``cancelled``, so we must not re-launch a new subprocess.
+            return None
+        finally:
+            _rotation_sleeps.pop(job_id, None)
+
+    # Re-check status: if ``cancel()`` raced us between the sleep ending
+    # and now, honour it instead of starting a fresh subprocess.
+    with Session(get_engine()) as db:
+        latest = db.get(Job, job_id)
+        if latest is None or latest.status == JobStatus.cancelled:
+            return None
+
+    # ``launch`` returns once the new subprocess has been spawned (the
+    # long-lived wait is in another ``_finalize_in_background`` task),
+    # and we're already running inside a background task, so this
     # doesn't block any request handler.
     await launch(job_id)
     return "retry_same_slot" if new_account_id is None else "retry_next_slot"
 
 
 async def cancel(job_id: int) -> bool:
-    """Send SIGINT to the running subprocess, if any."""
+    """Cancel a running subprocess **or** an in-flight rotation sleep.
+
+    Returns True if either path actually cancelled something. Without
+    the rotation-sleep handling a user clicking 'Cancel' during a
+    FloodWait retry window would silently do nothing because the
+    subprocess has already exited and the next one hasn't been spawned
+    yet.
+    """
     proc = _running.get(job_id)
-    if proc is None or proc.returncode is not None:
-        return False
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-    except (ProcessLookupError, PermissionError):
-        return False
-    with Session(get_engine()) as db:
-        job = db.get(Job, job_id)
-        if job is not None and job.status == JobStatus.running:
-            job.status = JobStatus.cancelled
-            db.add(job)
-            db.commit()
-    return True
+    if proc is not None and proc.returncode is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except (ProcessLookupError, PermissionError):
+            return False
+        with Session(get_engine()) as db:
+            job = db.get(Job, job_id)
+            if job is not None and job.status == JobStatus.running:
+                job.status = JobStatus.cancelled
+                db.add(job)
+                db.commit()
+        return True
+
+    sleep_task = _rotation_sleeps.get(job_id)
+    if sleep_task is not None and not sleep_task.done():
+        # Mark the row cancelled *before* cancelling the sleep so the
+        # rotation coroutine sees the new status if it races us.
+        with Session(get_engine()) as db:
+            job = db.get(Job, job_id)
+            if job is not None and job.status in (
+                JobStatus.pending,
+                JobStatus.running,
+            ):
+                job.status = JobStatus.cancelled
+                job.ended_at = datetime.now(tz=UTC)
+                db.add(job)
+                db.commit()
+        sleep_task.cancel()
+        return True
+
+    return False
 
 
 def is_running(job_id: int) -> bool:
     proc = _running.get(job_id)
-    return proc is not None and proc.returncode is None
+    if proc is not None and proc.returncode is None:
+        return True
+    # A FloodWait rotation between subprocesses still counts as
+    # "running" for SSE purposes — the client should keep the log
+    # stream open across the gap.
+    sleep_task = _rotation_sleeps.get(job_id)
+    return sleep_task is not None and not sleep_task.done()
 
 
 async def tail_log_iter(

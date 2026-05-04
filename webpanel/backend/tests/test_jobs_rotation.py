@@ -8,6 +8,7 @@ the caller to mark the job failed by returning ``None``.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -278,6 +279,127 @@ async def test_cancelled_job_is_not_retried(
         job.status = JobStatus.cancelled
         db.add(job)
         db.commit()
+
+    decision = await jobs_runner._maybe_rotate(job_id)
+    assert decision is None
+    assert stub_launch == []
+
+
+# --- rotation-sleep cancel + SSE-visibility regression tests ----------
+
+
+@pytest.mark.asyncio
+async def test_is_running_true_during_rotation_sleep(
+    client: TestClient,
+    tmp_path: Path,
+    stub_launch: list[int],
+) -> None:
+    """While we wait for FloodWait to expire, ``is_running`` must stay True.
+
+    Otherwise ``tail_log_iter`` would close the SSE stream after its
+    5-second idle timeout and the user would lose the live log just
+    before the retry subprocess spawns.
+    """
+    bootstrap_login(client)
+    account_id = _seed_authorised()
+    # 2-second wait — long enough to assert is_running() during the
+    # sleep window, short enough not to bog the test suite down.
+    job_id = _seed_failed_parse_job(
+        account_id=account_id,
+        log_path=tmp_path / "job.log",
+        log_text="FloodWaitError: A wait of 2 seconds is required",
+    )
+
+    rotate_task = asyncio.create_task(jobs_runner._maybe_rotate(job_id))
+    # Yield enough times for ``_maybe_rotate`` to reach the sleep.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if job_id in jobs_runner._rotation_sleeps:
+            break
+
+    assert job_id in jobs_runner._rotation_sleeps
+    assert jobs_runner.is_running(job_id) is True
+
+    decision = await rotate_task
+    assert decision == "retry_same_slot"
+    assert stub_launch == [job_id]
+    assert job_id not in jobs_runner._rotation_sleeps
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_rotation_sleep_aborts_relaunch(
+    client: TestClient,
+    tmp_path: Path,
+    stub_launch: list[int],
+) -> None:
+    """Clicking 'Cancel' while we wait for FloodWait must actually cancel.
+
+    Before the fix the cancel button was effectively dead during the
+    rotation-sleep window: the subprocess had exited (popped from
+    ``_running``) but the next one hadn't started, so ``cancel()``
+    returned False and the rotation continued, ignoring the user.
+    """
+    bootstrap_login(client)
+    account_id = _seed_authorised()
+    job_id = _seed_failed_parse_job(
+        account_id=account_id,
+        log_path=tmp_path / "job.log",
+        log_text="FloodWaitError: A wait of 5 seconds is required",
+    )
+
+    rotate_task = asyncio.create_task(jobs_runner._maybe_rotate(job_id))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if job_id in jobs_runner._rotation_sleeps:
+            break
+    assert job_id in jobs_runner._rotation_sleeps
+
+    cancelled = await jobs_runner.cancel(job_id)
+    assert cancelled is True
+
+    decision = await rotate_task
+    assert decision is None  # rotation aborted
+    assert stub_launch == []  # no relaunch happened
+
+    with Session(get_engine()) as db:
+        job = db.get(Job, job_id)
+        assert job is not None
+        assert job.status == JobStatus.cancelled
+        assert job.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_rotation_sleep_status_flip_skips_relaunch(
+    client: TestClient,
+    tmp_path: Path,
+    stub_launch: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the row gets flipped to ``cancelled`` between sleep and relaunch,
+    ``_maybe_rotate`` must honour it instead of starting a new subprocess.
+
+    Simulates a narrow race: sleep finishes, control returns to
+    ``_maybe_rotate``, then a concurrent ``cancel()`` updates the row
+    *before* the relaunch ``await launch(...)`` runs.
+    """
+    bootstrap_login(client)
+    account_id = _seed_authorised()
+    job_id = _seed_failed_parse_job(
+        account_id=account_id,
+        log_path=tmp_path / "job.log",
+        log_text="FloodWaitError: A wait of 5 seconds is required",
+    )
+
+    async def _flip_after_sleep(seconds: float) -> None:
+        del seconds
+        with Session(get_engine()) as db:
+            job = db.get(Job, job_id)
+            assert job is not None
+            job.status = JobStatus.cancelled
+            db.add(job)
+            db.commit()
+
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", _flip_after_sleep)
 
     decision = await jobs_runner._maybe_rotate(job_id)
     assert decision is None
