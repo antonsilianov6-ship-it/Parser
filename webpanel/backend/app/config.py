@@ -59,6 +59,12 @@ class Settings(BaseSettings):
         description="Externally reachable noVNC URL embedded in the SPA "
         "iframe. Set to your VPS hostname/IP in production.",
     )
+    enable_scheduler: bool = Field(
+        default=True,
+        description="When false, APScheduler is not started. Tests use this "
+        "to keep the event loop free of cron ticks; a single-tenant deploy "
+        "may also disable it if cron-style auto-runs aren't needed.",
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod

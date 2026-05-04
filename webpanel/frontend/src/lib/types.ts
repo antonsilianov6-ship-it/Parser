@@ -56,3 +56,19 @@ export interface Job {
 	started_at: string | null;
 	ended_at: string | null;
 }
+
+export interface Schedule {
+	id: number;
+	owner_id: number;
+	telegram_account_id: number;
+	name: string;
+	cron_expression: string;
+	channel: string | null;
+	export_to_docs: boolean;
+	export_to_notebooklm: boolean;
+	is_active: boolean;
+	last_run_at: string | null;
+	next_run_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
