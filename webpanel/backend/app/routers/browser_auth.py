@@ -33,11 +33,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/google/notebooklm/auth", tags=["google"])
 
 
-# NotebookLM redirects to this URL once a user is signed in. The
-# ``/u/0/`` segment may appear with different account indices; we
-# match on the substring that's stable across all signed-in flows.
+# NotebookLM lives at this origin. We compare the full origin prefix
+# (not just the host) because Google's accounts.google.com login page
+# embeds ``continue=https://notebooklm.google.com/...`` in the query
+# string — a naive substring match would flip status to ``ready``
+# before the user has actually signed in.
 NOTEBOOKLM_HOME_URL = "https://notebooklm.google.com/"
-NOTEBOOKLM_SUCCESS_SUBSTRING = "notebooklm.google.com"
+NOTEBOOKLM_SUCCESS_PREFIX = "https://notebooklm.google.com"
 
 
 class BrowserSessionPublic(BaseModel):
@@ -76,7 +78,7 @@ async def start_auth(current_user: CurrentUser) -> BrowserSessionPublic:
             user_id=current_user.id,
             purpose="notebooklm",
             target_url=NOTEBOOKLM_HOME_URL,
-            success_url_substring=NOTEBOOKLM_SUCCESS_SUBSTRING,
+            success_url_substring=NOTEBOOKLM_SUCCESS_PREFIX,
         )
     except RuntimeError as exc:
         # Either the browser service is unreachable, or another user

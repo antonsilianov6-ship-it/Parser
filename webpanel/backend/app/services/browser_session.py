@@ -158,7 +158,12 @@ class BrowserSessionManager:
                 current = session._page.url
             except Exception:  # noqa: BLE001 — page may have closed
                 current = ""
-            if current and session.success_url_substring in current:
+            # Use a prefix check rather than substring so that Google's
+            # accounts.google.com login redirect (which embeds NotebookLM
+            # under continue=https://notebooklm.google.com/...) does NOT
+            # falsely flip status to "ready" before the user has actually
+            # signed in.
+            if current and current.startswith(session.success_url_substring):
                 session.status = "ready"
         return session
 
@@ -210,18 +215,40 @@ class BrowserSessionManager:
             await playwright.stop()
             raise
 
-        # ``connect_over_cdp`` yields the existing Chromium instance.
-        # We close any leftover contexts so the visible window is
-        # always the brand-new login tab.
-        for ctx in list(browser.contexts):
-            try:
-                await ctx.close()
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                pass
+        # Anything below can fail (network blip on goto, ctx.close races,
+        # CDP target loss). Until we've stashed the handles on the session
+        # object, ``_teardown`` won't see them — so we clean up locally on
+        # any failure to avoid leaking the WebSocket / browser process.
+        try:
+            # ``connect_over_cdp`` yields the existing Chromium instance.
+            # Close leftover contexts so the visible window is always the
+            # brand-new login tab.
+            for ctx in list(browser.contexts):
+                try:
+                    await ctx.close()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
 
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto(session.target_url, wait_until="domcontentloaded")
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto(session.target_url, wait_until="domcontentloaded")
+        except Exception:
+            for handle, closer in (
+                (locals().get("page"), lambda h: h.close()),
+                (locals().get("context"), lambda h: h.close()),
+                (browser, lambda h: h.close()),
+                (playwright, lambda h: h.stop()),
+            ):
+                if handle is None:
+                    continue
+                try:
+                    await closer(handle)
+                except Exception:  # noqa: BLE001 — best-effort
+                    logger.debug(
+                        "Cleanup error while unwinding failed _open_page",
+                        exc_info=True,
+                    )
+            raise
 
         session._playwright = playwright
         session._browser = browser

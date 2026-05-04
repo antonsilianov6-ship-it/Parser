@@ -137,6 +137,39 @@ def test_poll_flips_to_ready_when_url_matches(
     assert response.json()["status"] == "ready"
 
 
+def test_google_login_redirect_does_not_trigger_ready(
+    client: TestClient, patched_browser: dict[str, Any]
+) -> None:
+    """Regression: ``accounts.google.com`` URL must NOT flip status to ready.
+
+    Google's sign-in page embeds the post-login destination as
+    ``continue=https://notebooklm.google.com/...``. A naive substring
+    match would think the user is already on NotebookLM the very first
+    time we poll. Status MUST remain ``pending`` until the page url
+    actually starts with the NotebookLM origin.
+    """
+    token = bootstrap_login(client)
+    start = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(token)
+    ).json()
+
+    from app.config import get_settings
+    from app.services.browser_session import get_manager
+
+    mgr = get_manager(get_settings())
+    assert mgr._session is not None
+    mgr._session._page.url = (
+        "https://accounts.google.com/v3/signin/identifier?"
+        "continue=https%3A%2F%2Fnotebooklm.google.com%2F"
+    )
+
+    response = client.get(
+        f"/api/google/notebooklm/auth/{start['id']}", headers=auth_header(token)
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+
+
 def test_save_writes_storage_state_to_disk(
     client: TestClient, patched_browser: dict[str, Any]
 ) -> None:

@@ -398,6 +398,10 @@
 		if (activeTab === 'google' && !googleLoaded) loadGoogleStatus();
 	});
 
+	// Stop the NotebookLM browser-auth poller when the component is
+	// destroyed so it doesn't keep firing API calls after navigation.
+	$effect(() => () => stopNotebookLMPolling());
+
 	const tabs: Array<{ id: Tab; label: string; description: string }> = [
 		{
 			id: 'config',
