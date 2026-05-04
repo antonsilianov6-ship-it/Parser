@@ -93,7 +93,12 @@ async def _run_post_parse_exports(messages, logger) -> bool:
             print(f"\n✓ Экспортировано {len(messages)} новых сообщений в Google Docs")
         except Exception as exc:
             logger.error("Ошибка экспорта в Google Docs: %s", exc, exc_info=True)
-            success = False
+            # CLI runs preserve the historical "log and continue" behaviour
+            # (UnifiedParser.export_to_google_docs swallowed exceptions, so
+            # exit code stayed 0). Panel-managed runs surface failures to
+            # the jobs UI by flipping ``success`` and exiting non-zero.
+            if panel:
+                success = False
     elif panel:
         logger.info("Google Docs экспорт отключён в панели — пропускаем")
 
