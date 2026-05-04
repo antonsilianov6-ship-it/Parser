@@ -61,6 +61,11 @@ def _check_account_and_creds(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You cannot use this Telegram account",
         )
+    if not account.is_authorized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telegram account is not authorised yet",
+        )
     if export_to_docs:
         if not parser_files.has_google_credentials(current_user.id):
             raise HTTPException(
@@ -222,7 +227,10 @@ def update_schedule(
         schedule.telegram_account_id = payload.telegram_account_id
     if payload.cron_expression is not None:
         schedule.cron_expression = payload.cron_expression
-    if payload.channel is not None:
+    # ``channel`` is the only field where ``None`` is a meaningful value
+    # (= "parse all channels from channels.txt"), so we have to look at
+    # ``model_fields_set`` to tell "field omitted" from "explicitly cleared".
+    if "channel" in payload.model_fields_set:
         schedule.channel = payload.channel
     if payload.export_to_docs is not None:
         schedule.export_to_docs = payload.export_to_docs

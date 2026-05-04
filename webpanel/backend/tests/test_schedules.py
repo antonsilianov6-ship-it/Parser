@@ -268,6 +268,93 @@ def test_reactivating_without_creds_still_blocks(
     assert response.status_code == 400
 
 
+def test_create_schedule_rejects_unauthorised_tg_account(
+    client: TestClient,
+) -> None:
+    """A schedule cannot point at a TG account that hasn't completed sign-in.
+
+    Otherwise every cron tick would spawn a Job that ``jobs_runner.launch``
+    immediately marks failed (the runner refuses unauthorised slots),
+    producing a stream of useless failed-job rows.
+    """
+    token = bootstrap_login(client)
+    account_payload = client.post(
+        "/api/telegram/accounts",
+        json={"label": "not-yet-signed-in"},
+        headers=auth_header(token),
+    ).json()
+    _seed_docs_creds(1)
+
+    response = client.post(
+        "/api/schedules",
+        json={
+            "name": "Useless",
+            "telegram_account_id": account_payload["id"],
+            "cron_expression": "0 * * * *",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400
+    assert "authorised" in response.json()["detail"].lower()
+
+
+def test_patch_can_clear_channel_to_null(
+    client: TestClient, authorised_account: tuple[str, dict]
+) -> None:
+    """PATCH must distinguish 'channel field omitted' from 'set channel=null'.
+
+    Setting ``channel`` back to ``None`` is the way to switch a schedule
+    from a single channel to "all channels in channels.txt".
+    """
+    token, account = authorised_account
+    created = client.post(
+        "/api/schedules",
+        json={
+            "name": "with channel",
+            "telegram_account_id": account["id"],
+            "cron_expression": "0 * * * *",
+            "channel": "@example",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    ).json()
+    assert created["channel"] == "@example"
+
+    response = client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"channel": None},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["channel"] is None
+
+
+def test_patch_without_channel_field_keeps_existing_value(
+    client: TestClient, authorised_account: tuple[str, dict]
+) -> None:
+    """Sanity check: omitting channel from PATCH must NOT wipe it."""
+    token, account = authorised_account
+    created = client.post(
+        "/api/schedules",
+        json={
+            "name": "with channel",
+            "telegram_account_id": account["id"],
+            "cron_expression": "0 * * * *",
+            "channel": "@example",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    ).json()
+    response = client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"name": "renamed only"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["channel"] == "@example"
+
+
 def test_other_user_cant_modify_schedule(
     client: TestClient, authorised_account: tuple[str, dict]
 ) -> None:
