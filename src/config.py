@@ -248,6 +248,21 @@ def load_config() -> None:
             if env_prompts:
                 CONFIG['NOTEBOOKLM']['prompts_config'] = env_prompts
 
+            # Same per-user override pattern for the Google block, so doc
+            # IDs / creds set via env survive the CONFIG['GOOGLE'].update(…)
+            # earlier in this function. Currently latent (panel mode never
+            # falls into load_config() because TELEGRAM_API_ID is set), but
+            # keeps env precedence consistent with other sections.
+            env_google_creds = os.environ.get('GOOGLE_CREDS_PATH')
+            if env_google_creds:
+                CONFIG['GOOGLE']['CREDS_PATH'] = env_google_creds
+            env_google_doc = os.environ.get('GOOGLE_DOC_ID')
+            if env_google_doc:
+                CONFIG['GOOGLE']['DOC_ID'] = env_google_doc
+            env_google_folder = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
+            if env_google_folder:
+                CONFIG['GOOGLE']['DRIVE_FOLDER_ID'] = env_google_folder
+
             print(f"Конфигурация загружена из {CONFIG_FILE}")
         except Exception as e:
             print(f"Ошибка при загрузке конфигурации из {CONFIG_FILE}: {e}")
