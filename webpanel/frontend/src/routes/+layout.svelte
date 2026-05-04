@@ -25,6 +25,11 @@
 			match: (p) => p.startsWith('/jobs')
 		},
 		{
+			href: '/schedule',
+			label: 'Расписание',
+			match: (p) => p.startsWith('/schedule')
+		},
+		{
 			href: '/messages',
 			label: 'Сообщения',
 			match: (p) => p.startsWith('/messages')

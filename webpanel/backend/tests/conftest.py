@@ -23,6 +23,7 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("PANEL_DB_PATH", str(tmp_path / "panel.db"))
     monkeypatch.setenv("PANEL_ALLOW_REGISTRATION", "false")
     monkeypatch.setenv("PANEL_CORS_ORIGINS", "http://localhost:5173")
+    monkeypatch.setenv("PANEL_ENABLE_SCHEDULER", "false")
 
     get_settings.cache_clear()
     app_db.reset_engine()
