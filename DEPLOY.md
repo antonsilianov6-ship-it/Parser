@@ -78,6 +78,14 @@ docker compose logs -f parser-panel   # watch startup
 
 The container exposes the panel on `http://<vps-ip>:8000`.
 
+`docker compose up` also starts a sibling **`browser`** service running headed
+Chromium + noVNC on port `6080`. The panel uses it for the in-browser
+NotebookLM login flow (Settings → Google → "Авторизоваться через браузер").
+If your VPS is behind a firewall, expose `6080` the same way you exposed
+`8000`, or proxy it through your reverse proxy. Set `PANEL_BROWSER_PUBLIC_URL`
+in `.env` to the URL clients will use to reach the noVNC service (defaults to
+`http://localhost:6080`, which only works for local tests).
+
 ## 6. Bootstrap the first admin user
 
 The panel ships with **no users** by default. The first one is created via a

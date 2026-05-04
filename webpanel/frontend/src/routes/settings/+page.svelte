@@ -22,6 +22,21 @@
 	let credsFileInput: HTMLInputElement | null = $state(null);
 	let nlmFileInput: HTMLInputElement | null = $state(null);
 
+	type BrowserSession = {
+		id: string;
+		purpose: string;
+		status: 'pending' | 'loading' | 'ready' | 'completed' | 'cancelled' | 'error';
+		error: string | null;
+		started_at: number;
+		finished_at: number | null;
+		target_url: string;
+		public_url: string;
+	};
+	let nlmSession = $state<BrowserSession | null>(null);
+	let nlmAuthError = $state<string | null>(null);
+	let nlmAuthBusy = $state(false);
+	let nlmPollHandle: ReturnType<typeof setInterval> | null = null;
+
 	let configText = $state('');
 	let configLoaded = $state(false);
 	let configError = $state<string | null>(null);
@@ -285,6 +300,83 @@
 			googleError = error instanceof ApiError ? error.message : String(error);
 		} finally {
 			googleSaving = false;
+		}
+	}
+
+	async function startNotebookLMAuth(): Promise<void> {
+		if (nlmAuthBusy) return;
+		nlmAuthBusy = true;
+		nlmAuthError = null;
+		try {
+			nlmSession = await api<BrowserSession>('/api/google/notebooklm/auth/start', {
+				method: 'POST'
+			});
+			startNotebookLMPolling();
+		} catch (error) {
+			nlmAuthError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			nlmAuthBusy = false;
+		}
+	}
+
+	function startNotebookLMPolling(): void {
+		stopNotebookLMPolling();
+		nlmPollHandle = setInterval(async () => {
+			if (!nlmSession) return stopNotebookLMPolling();
+			try {
+				nlmSession = await api<BrowserSession>(
+					`/api/google/notebooklm/auth/${nlmSession.id}`
+				);
+			} catch (error) {
+				nlmAuthError = error instanceof ApiError ? error.message : String(error);
+				stopNotebookLMPolling();
+			}
+			if (nlmSession && !['pending', 'loading', 'ready'].includes(nlmSession.status)) {
+				stopNotebookLMPolling();
+			}
+		}, 2000);
+	}
+
+	function stopNotebookLMPolling(): void {
+		if (nlmPollHandle !== null) {
+			clearInterval(nlmPollHandle);
+			nlmPollHandle = null;
+		}
+	}
+
+	async function saveNotebookLMAuth(): Promise<void> {
+		if (!nlmSession || nlmAuthBusy) return;
+		nlmAuthBusy = true;
+		nlmAuthError = null;
+		try {
+			nlmSession = await api<BrowserSession>(
+				`/api/google/notebooklm/auth/${nlmSession.id}/save`,
+				{ method: 'POST' }
+			);
+			stopNotebookLMPolling();
+			// Refresh status flag.
+			googleStatus = await api<GoogleStatus>('/api/google/status');
+		} catch (error) {
+			nlmAuthError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			nlmAuthBusy = false;
+		}
+	}
+
+	async function cancelNotebookLMAuth(): Promise<void> {
+		if (!nlmSession || nlmAuthBusy) return;
+		nlmAuthBusy = true;
+		nlmAuthError = null;
+		try {
+			nlmSession = await api<BrowserSession>(
+				`/api/google/notebooklm/auth/${nlmSession.id}/cancel`,
+				{ method: 'POST' }
+			);
+			stopNotebookLMPolling();
+		} catch (error) {
+			nlmAuthError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			nlmAuthBusy = false;
 		}
 	}
 
@@ -676,6 +768,82 @@
 							<button class="btn-danger btn-sm" onclick={deleteNotebookLM}>
 								Удалить
 							</button>
+						{/if}
+					</div>
+
+					<div class="border-t border-slate-200 pt-4 dark:border-slate-700">
+						<h3 class="text-sm font-semibold tracking-tight">
+							Или авторизуйтесь прямо в браузере панели
+						</h3>
+						<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+							Откроется headless Chromium на сервере. Вы увидите его экран
+							ниже через noVNC и сможете залогиниться в Google. После
+							появления главной NotebookLM нажмите «Сохранить сессию» — панель
+							сама достанет cookies и положит файл вместо ручной выгрузки.
+						</p>
+
+						{#if !nlmSession || ['completed', 'cancelled', 'error'].includes(nlmSession.status)}
+							<button
+								class="btn-primary btn-sm mt-3"
+								onclick={startNotebookLMAuth}
+								disabled={nlmAuthBusy}
+							>
+								{nlmAuthBusy ? 'Запускаем…' : 'Авторизоваться через браузер'}
+							</button>
+							{#if nlmSession?.status === 'completed'}
+								<p class="mt-2 text-xs text-emerald-600">
+									✓ storage_state сохранён ({new Date(
+										(nlmSession.finished_at ?? nlmSession.started_at) * 1000
+									).toLocaleTimeString('ru-RU')})
+								</p>
+							{:else if nlmSession?.status === 'cancelled'}
+								<p class="mt-2 text-xs text-slate-500">Сессия отменена.</p>
+							{:else if nlmSession?.status === 'error'}
+								<p class="mt-2 text-xs text-rose-600">
+									Ошибка: {nlmSession.error ?? 'неизвестная'}
+								</p>
+							{/if}
+						{:else}
+							<div class="mt-3 space-y-3">
+								<div class="flex flex-wrap items-center gap-2">
+									<span
+										class="pill-{nlmSession.status === 'ready'
+											? 'green'
+											: 'amber'}"
+									>
+										{#if nlmSession.status === 'loading'}
+											Открываем браузер…
+										{:else if nlmSession.status === 'pending'}
+											Войдите в Google
+										{:else}
+											NotebookLM открыта — можно сохранять
+										{/if}
+									</span>
+									<button
+										class="btn-primary btn-sm"
+										onclick={saveNotebookLMAuth}
+										disabled={nlmSession.status !== 'ready' || nlmAuthBusy}
+									>
+										Сохранить сессию
+									</button>
+									<button
+										class="btn-ghost btn-sm"
+										onclick={cancelNotebookLMAuth}
+										disabled={nlmAuthBusy}
+									>
+										Отмена
+									</button>
+								</div>
+								<iframe
+									title="NotebookLM авторизация"
+									src={nlmSession.public_url}
+									class="aspect-[16/10] w-full rounded border border-slate-200 dark:border-slate-700"
+								></iframe>
+							</div>
+						{/if}
+
+						{#if nlmAuthError}
+							<p class="mt-2 text-xs text-rose-600">{nlmAuthError}</p>
 						{/if}
 					</div>
 				</div>
