@@ -95,6 +95,20 @@ def test_settings_normalises_urls_to_ids(client: TestClient) -> None:
     assert body["google_drive_folder_id"] == "FOLDER456"
 
 
+def test_settings_handles_slash_only_input(client: TestClient) -> None:
+    """Slash-only inputs used to IndexError on parts[-1]; now coerced to None."""
+    token = bootstrap_login(client)
+    response = client.put(
+        "/api/google/settings",
+        json={"google_doc_id": "/", "google_drive_folder_id": "//"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["google_doc_id"] is None
+    assert body["google_drive_folder_id"] is None
+
+
 def test_notebooklm_upload_and_delete(client: TestClient) -> None:
     token = bootstrap_login(client)
     payload = _storage_state_json()

@@ -59,6 +59,9 @@ def _extract_id(value: str | None, kind: str) -> str | None:
     if "/" not in value:
         return _clean(value)
     parts = [p for p in value.split("/") if p]
+    if not parts:
+        # Slash-only input ("/", "//") would otherwise IndexError on parts[-1].
+        return None
     if kind == "doc" and "d" in parts:
         idx = parts.index("d")
         if idx + 1 < len(parts):
