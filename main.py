@@ -15,14 +15,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.core.unified_parser import UnifiedParser
-from src.export.post_parse import (
-    clear_db_after_export,
-    clear_messages_table,
-    docs_enabled,
-    export_to_notebooklm_via_file,
-    is_panel_managed,
-    notebooklm_enabled,
-)
+from src.export.post_parse import run_export_pipeline
 from src.utils.logger import setup_logger
 from src.config import validate_config
 
@@ -63,63 +56,13 @@ def parse_arguments() -> argparse.Namespace:
 
 
 async def _run_post_parse_exports(messages, logger) -> bool:
-    """Запускает экспорт-шаги (Docs / NotebookLM) и опциональную чистку БД.
+    """Тонкая обёртка над :func:`src.export.post_parse.run_export_pipeline`.
 
-    Управляется env-флагами от web-panel:
-    - ``PARSER_EXPORT_TO_DOCS=1`` / ``PARSER_EXPORT_TO_NOTEBOOKLM=1`` — что делать;
-    - ``PARSER_CLEAR_DB_AFTER_EXPORT=1`` — удалить ``messages`` после успеха.
-
-    При CLI-запуске (без панели) ведёт себя как раньше: экспорт в Docs всегда,
-    NotebookLM не вызывается, БД не чистится.
+    Логика вынесена в ``src/export/post_parse.py`` чтобы её можно было
+    тестировать без импорта тяжёлой Telethon-цепочки из ``main``.
     """
-    if not messages:
-        return True
-
-    success = True
-    panel = is_panel_managed()
-
-    if docs_enabled():
-        try:
-            from src.config import GOOGLE_CONFIG
-            logger.info(
-                f"Экспорт {len(messages)} новых сообщений в Google Docs "
-                f"(creds={GOOGLE_CONFIG.get('CREDS_PATH')!r})"
-            )
-            from src.export.google_docs import GoogleDocsExporter
-            from src.config import get_google_config
-            exporter = GoogleDocsExporter()
-            batch_size = get_google_config().get("BATCH_SIZE", 100)
-            exporter.append_new_content(messages, batch_size=batch_size)
-            print(f"\n✓ Экспортировано {len(messages)} новых сообщений в Google Docs")
-        except Exception as exc:
-            logger.error("Ошибка экспорта в Google Docs: %s", exc, exc_info=True)
-            # CLI runs preserve the historical "log and continue" behaviour
-            # (UnifiedParser.export_to_google_docs swallowed exceptions, so
-            # exit code stayed 0). Panel-managed runs surface failures to
-            # the jobs UI by flipping ``success`` and exiting non-zero.
-            if panel:
-                success = False
-    elif panel:
-        logger.info("Google Docs экспорт отключён в панели — пропускаем")
-
-    if notebooklm_enabled():
-        logger.info("Экспорт %s сообщений в NotebookLM…", len(messages))
-        nlm_ok = await export_to_notebooklm_via_file(messages)
-        if nlm_ok:
-            print(f"\n✓ Загружено {len(messages)} сообщений в NotebookLM")
-        else:
-            success = False
-
-    if success and clear_db_after_export():
-        logger.info("Очистка messages в parser.db после успешного экспорта…")
-        try:
-            removed = clear_messages_table()
-            print(f"\n✓ Удалено {removed} строк из parser.db (entity-cache сохранён)")
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Ошибка очистки messages: %s", exc, exc_info=True)
-            success = False
-
-    return success
+    del logger  # post_parse uses its own module logger
+    return await run_export_pipeline(messages)
 
 
 async def run_parse_mode(parser: UnifiedParser, args: argparse.Namespace, logger) -> bool:
