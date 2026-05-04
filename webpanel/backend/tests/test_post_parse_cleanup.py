@@ -93,3 +93,90 @@ def test_panel_mode_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     assert post_parse.is_panel_managed() is True
     assert post_parse.docs_enabled() is False
     assert post_parse.notebooklm_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_failed_docs_export_skips_db_clear_in_cli_mode(
+    parser_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI mode: Docs export crashes -> messages table MUST stay intact.
+
+    Regression for the post-PR-#11 finding (Devin Review): the
+    earlier patch made ``success`` mode-dependent for exit-code
+    backwards compatibility, but ``clear_db_after_export`` still has
+    to gate on whether exports actually succeeded. Otherwise
+    ``PARSER_CLEAR_DB_AFTER_EXPORT=1`` + a failed Docs export would
+    silently delete messages that never reached Google.
+    """
+    import sys
+    import types
+
+    # The test environment doesn't ship the Google API client (it lives
+    # in requirements.runtime.txt for the parser image only). Stub the
+    # GoogleDocsExporter import done inside run_export_pipeline so we
+    # can exercise the failure branch without pulling googleapiclient
+    # into webpanel/backend deps.
+    fake_export = types.ModuleType("src.export.google_docs")
+
+    class _BoomExporter:
+        def __init__(self) -> None:
+            raise RuntimeError("creds missing")
+
+    fake_export.GoogleDocsExporter = _BoomExporter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "src.export.google_docs", fake_export)
+
+    monkeypatch.setenv("PARSER_CLEAR_DB_AFTER_EXPORT", "1")
+    monkeypatch.delenv("PARSER_EXPORT_TO_DOCS", raising=False)  # CLI mode
+    monkeypatch.delenv("PARSER_EXPORT_TO_NOTEBOOKLM", raising=False)
+
+    import importlib
+
+    import src.export.post_parse as pp
+
+    importlib.reload(pp)
+
+    result = await pp.run_export_pipeline([{"id": 1, "text": "x"}])
+    # CLI: returns True (historical exit-code preservation).
+    assert result is True
+    # …but the messages table MUST still be intact.
+    with sqlite3.connect(parser_db) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert rows == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_docs_export_skips_db_clear_in_panel_mode(
+    parser_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Panel mode: same data-safety guard, plus success=False return."""
+    import sys
+    import types
+
+    fake_export = types.ModuleType("src.export.google_docs")
+
+    class _BoomExporter:
+        def __init__(self) -> None:
+            raise RuntimeError("creds missing")
+
+    fake_export.GoogleDocsExporter = _BoomExporter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "src.export.google_docs", fake_export)
+
+    monkeypatch.setenv("PARSER_CLEAR_DB_AFTER_EXPORT", "1")
+    monkeypatch.setenv("PARSER_EXPORT_TO_DOCS", "1")
+    monkeypatch.setenv("PARSER_EXPORT_TO_NOTEBOOKLM", "0")
+
+    import importlib
+
+    import src.export.post_parse as pp
+
+    importlib.reload(pp)
+
+    result = await pp.run_export_pipeline([{"id": 1, "text": "x"}])
+    # Panel: surfaces failure to jobs UI.
+    assert result is False
+    # And still doesn't touch the DB.
+    with sqlite3.connect(parser_db) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert rows == 3

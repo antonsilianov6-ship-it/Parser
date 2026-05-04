@@ -128,6 +128,78 @@ def _write_messages_csv(messages: list[dict[str, Any]]) -> Path:
     return csv_path
 
 
+async def run_export_pipeline(messages: Iterable[dict[str, Any]]) -> bool:
+    """Run Docs / NotebookLM exports + DB cleanup driven by env flags.
+
+    Returns the value the parser should use as its overall success
+    flag (which `main.py` translates to the process exit code).
+
+    Two distinct concerns are tracked:
+
+    - ``success`` — the public boolean. CLI runs preserve historical
+      "log Docs failure but exit 0" behaviour; panel-managed runs
+      surface failures via ``success=False`` so the jobs UI marks
+      them red.
+    - ``export_ok`` — internal data-safety guard. ANY export failure
+      flips this to ``False`` and skips ``clear_messages_table`` so
+      ``PARSER_CLEAR_DB_AFTER_EXPORT=1`` never silently deletes
+      messages that didn't actually make it to Docs / NotebookLM.
+    """
+    messages_list = list(messages)
+    if not messages_list:
+        return True
+
+    success = True
+    export_ok = True
+    panel = is_panel_managed()
+
+    if docs_enabled():
+        try:
+            from src.config import GOOGLE_CONFIG, get_google_config
+            from src.export.google_docs import GoogleDocsExporter
+
+            logger.info(
+                "Экспорт %s новых сообщений в Google Docs (creds=%r)",
+                len(messages_list),
+                GOOGLE_CONFIG.get("CREDS_PATH"),
+            )
+            exporter = GoogleDocsExporter()
+            batch_size = get_google_config().get("BATCH_SIZE", 100)
+            exporter.append_new_content(messages_list, batch_size=batch_size)
+            print(f"\n✓ Экспортировано {len(messages_list)} новых сообщений в Google Docs")
+        except Exception as exc:  # noqa: BLE001 — ловим любую ошибку API
+            logger.error("Ошибка экспорта в Google Docs: %s", exc, exc_info=True)
+            export_ok = False
+            if panel:
+                success = False
+    elif panel:
+        logger.info("Google Docs экспорт отключён в панели — пропускаем")
+
+    if notebooklm_enabled():
+        logger.info("Экспорт %s сообщений в NotebookLM…", len(messages_list))
+        nlm_ok = await export_to_notebooklm_via_file(messages_list)
+        if nlm_ok:
+            print(f"\n✓ Загружено {len(messages_list)} сообщений в NotebookLM")
+        else:
+            export_ok = False
+            success = False
+
+    if export_ok and clear_db_after_export():
+        logger.info("Очистка messages в parser.db после успешного экспорта…")
+        try:
+            removed = clear_messages_table()
+            print(f"\n✓ Удалено {removed} строк из parser.db (entity-cache сохранён)")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Ошибка очистки messages: %s", exc, exc_info=True)
+            success = False
+    elif not export_ok and clear_db_after_export():
+        logger.warning(
+            "Пропускаем очистку messages: один из экспортов завершился с ошибкой"
+        )
+
+    return success
+
+
 def clear_messages_table() -> int:
     """Delete every row from the parser's ``messages`` table.
 
