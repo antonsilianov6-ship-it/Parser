@@ -66,19 +66,26 @@ async def shutdown_scheduler() -> None:
 
 
 def upsert_schedule(schedule: Schedule) -> None:
-    """Mirror a Schedule row into the running APScheduler instance."""
+    """Mirror a Schedule row into the running APScheduler instance.
+
+    Deactivating a schedule also clears its ``next_run_at`` so the UI
+    doesn't keep showing a stale "fires next at …" timestamp for a
+    schedule that won't fire.
+    """
+    if schedule.id is None:
+        return
+    if not schedule.is_active:
+        # Always clear the projection field — even if the scheduler isn't
+        # running (tests, single-tenant deploy) — so the row stays honest.
+        schedule.next_run_at = None
     if _scheduler is None:
         # Tests may exercise CRUD without starting the scheduler.
         logger.debug("Scheduler not running; skipping upsert for %s", schedule.id)
         return
-    if schedule.id is None:
-        return
     if schedule.is_active:
         _add_or_replace_job(schedule)
-    else:
-        _scheduler.remove_job(_job_id(schedule.id), jobstore=None) if _has_job(
-            schedule.id
-        ) else None
+    elif _has_job(schedule.id):
+        _scheduler.remove_job(_job_id(schedule.id))
 
 
 def remove_schedule(schedule_id: int) -> None:

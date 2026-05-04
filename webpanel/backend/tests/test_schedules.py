@@ -175,6 +175,99 @@ def test_update_and_delete_schedule(
     assert client.get("/api/schedules", headers=auth_header(token)).json() == []
 
 
+def test_deactivate_does_not_revalidate_creds(
+    client: TestClient, authorised_account: tuple[str, dict]
+) -> None:
+    """Regression: pausing a schedule must work even after creds are gone.
+
+    Previously ``update_schedule`` always called the credential check,
+    so a user who deleted their Google Service Account JSON could not
+    flip ``is_active=False`` on an existing Docs-export schedule and
+    was stuck with a cron that spawned failing jobs every tick.
+    """
+    token, account = authorised_account
+    created = client.post(
+        "/api/schedules",
+        json={
+            "name": "Was active",
+            "telegram_account_id": account["id"],
+            "cron_expression": "0 * * * *",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    ).json()
+
+    # Wipe the per-user Google credential file so the cred check would fail.
+    parser_files.google_credentials_path(1).unlink()
+
+    response = client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"is_active": False},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["is_active"] is False
+    # Stale next_run_at must also be wiped on deactivation.
+    assert body["next_run_at"] is None
+
+
+def test_rename_does_not_revalidate_creds_when_inactive(
+    client: TestClient, authorised_account: tuple[str, dict]
+) -> None:
+    token, account = authorised_account
+    created = client.post(
+        "/api/schedules",
+        json={
+            "name": "Old",
+            "telegram_account_id": account["id"],
+            "cron_expression": "0 * * * *",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    ).json()
+    client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"is_active": False},
+        headers=auth_header(token),
+    )
+    parser_files.google_credentials_path(1).unlink()
+
+    response = client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"name": "Renamed while paused"},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Renamed while paused"
+
+
+def test_reactivating_without_creds_still_blocks(
+    client: TestClient, authorised_account: tuple[str, dict]
+) -> None:
+    """Re-enabling a paused schedule must still require the creds it needs."""
+    token, account = authorised_account
+    created = client.post(
+        "/api/schedules",
+        json={
+            "name": "Paused",
+            "telegram_account_id": account["id"],
+            "cron_expression": "0 * * * *",
+            "export_to_docs": True,
+            "is_active": False,
+        },
+        headers=auth_header(token),
+    ).json()
+    parser_files.google_credentials_path(1).unlink()
+
+    response = client.patch(
+        f"/api/schedules/{created['id']}",
+        json={"is_active": True},
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400
+
+
 def test_other_user_cant_modify_schedule(
     client: TestClient, authorised_account: tuple[str, dict]
 ) -> None:

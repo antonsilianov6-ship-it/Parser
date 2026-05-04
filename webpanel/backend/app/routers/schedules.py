@@ -190,21 +190,31 @@ def update_schedule(
         if payload.export_to_notebooklm is not None
         else schedule.export_to_notebooklm
     )
-    if not (new_docs or new_nlm):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Для расписания нужно выбрать хотя бы один вариант "
-                "выгрузки: Google Docs или NotebookLM"
-            ),
-        )
-    _check_account_and_creds(
-        session,
-        current_user,
-        telegram_account_id=new_account_id,
-        export_to_docs=new_docs,
-        export_to_notebooklm=new_nlm,
+    new_is_active = (
+        payload.is_active if payload.is_active is not None else schedule.is_active
     )
+
+    # Validate creds only when the post-update schedule is going to actually
+    # fire — otherwise the user can't pause or rename a stale schedule
+    # whose creds were removed (e.g. after rotating the Service Account JSON).
+    # Same for the at-least-one-export check: a deactivated schedule with
+    # neither flag is harmless because no Job will be spawned.
+    if new_is_active:
+        if not (new_docs or new_nlm):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Для расписания нужно выбрать хотя бы один вариант "
+                    "выгрузки: Google Docs или NotebookLM"
+                ),
+            )
+        _check_account_and_creds(
+            session,
+            current_user,
+            telegram_account_id=new_account_id,
+            export_to_docs=new_docs,
+            export_to_notebooklm=new_nlm,
+        )
 
     if payload.name is not None:
         schedule.name = payload.name
