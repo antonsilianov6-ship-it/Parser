@@ -22,3 +22,9 @@ class User(SQLModel, table=True):
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+    # Google integration (per-user). The actual credentials JSON files live on
+    # disk under the user's data directory (see ``parser_files.py``); the DB
+    # only stores the metadata that's safe to expose through the API.
+    google_doc_id: str | None = Field(default=None, max_length=128)
+    google_drive_folder_id: str | None = Field(default=None, max_length=128)

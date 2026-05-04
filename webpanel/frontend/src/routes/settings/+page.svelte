@@ -1,8 +1,26 @@
 <script lang="ts">
 	import { api, ApiError } from '$lib/api';
 
-	type Tab = 'config' | 'prompts' | 'channels';
+	type Tab = 'config' | 'prompts' | 'channels' | 'google';
 	let activeTab = $state<Tab>('config');
+
+	type GoogleStatus = {
+		has_credentials: boolean;
+		credentials_email: string | null;
+		has_notebooklm_storage: boolean;
+		google_doc_id: string | null;
+		google_drive_folder_id: string | null;
+	};
+	let googleStatus = $state<GoogleStatus | null>(null);
+	let googleLoaded = $state(false);
+	let googleError = $state<string | null>(null);
+	let googleSaving = $state(false);
+	let googleTestResult = $state<string | null>(null);
+	let googleTestError = $state<string | null>(null);
+	let googleDocIdInput = $state('');
+	let googleFolderIdInput = $state('');
+	let credsFileInput: HTMLInputElement | null = $state(null);
+	let nlmFileInput: HTMLInputElement | null = $state(null);
 
 	let configText = $state('');
 	let configLoaded = $state(false);
@@ -178,10 +196,114 @@
 		}
 	}
 
+	async function loadGoogleStatus(): Promise<void> {
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/status');
+			googleDocIdInput = googleStatus.google_doc_id ?? '';
+			googleFolderIdInput = googleStatus.google_drive_folder_id ?? '';
+			googleError = null;
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			googleLoaded = true;
+		}
+	}
+
+	async function uploadCredentials(): Promise<void> {
+		const file = credsFileInput?.files?.[0];
+		if (!file) return;
+		const fd = new FormData();
+		fd.append('file', file);
+		googleError = null;
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/credentials', {
+				method: 'PUT',
+				body: fd
+			});
+			if (credsFileInput) credsFileInput.value = '';
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function deleteCredentials(): Promise<void> {
+		if (!confirm('Удалить Google Service Account?')) return;
+		googleError = null;
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/credentials', {
+				method: 'DELETE'
+			});
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function uploadNotebookLM(): Promise<void> {
+		const file = nlmFileInput?.files?.[0];
+		if (!file) return;
+		const fd = new FormData();
+		fd.append('file', file);
+		googleError = null;
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/notebooklm', {
+				method: 'PUT',
+				body: fd
+			});
+			if (nlmFileInput) nlmFileInput.value = '';
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function deleteNotebookLM(): Promise<void> {
+		if (!confirm('Удалить storage_state.json от NotebookLM?')) return;
+		googleError = null;
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/notebooklm', {
+				method: 'DELETE'
+			});
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function saveGoogleSettings(): Promise<void> {
+		if (googleSaving) return;
+		googleSaving = true;
+		googleError = null;
+		try {
+			googleStatus = await api<GoogleStatus>('/api/google/settings', {
+				method: 'PUT',
+				body: {
+					google_doc_id: googleDocIdInput.trim() || null,
+					google_drive_folder_id: googleFolderIdInput.trim() || null
+				}
+			});
+			googleDocIdInput = googleStatus.google_doc_id ?? '';
+			googleFolderIdInput = googleStatus.google_drive_folder_id ?? '';
+		} catch (error) {
+			googleError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			googleSaving = false;
+		}
+	}
+
+	async function testGoogle(): Promise<void> {
+		googleTestResult = null;
+		googleTestError = null;
+		try {
+			const res = await api<{ detail: string }>('/api/google/test', { method: 'POST' });
+			googleTestResult = res.detail;
+		} catch (error) {
+			googleTestError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
 	$effect(() => {
 		if (activeTab === 'config' && !configLoaded) loadConfig();
 		if (activeTab === 'prompts' && !promptsLoaded) loadPrompts();
 		if (activeTab === 'channels' && !channelsLoaded) loadChannels();
+		if (activeTab === 'google' && !googleLoaded) loadGoogleStatus();
 	});
 
 	const tabs: Array<{ id: Tab; label: string; description: string }> = [
@@ -199,6 +321,11 @@
 			id: 'channels',
 			label: 'Каналы',
 			description: 'channels.txt'
+		},
+		{
+			id: 'google',
+			label: 'Google',
+			description: 'Drive / NotebookLM'
 		}
 	];
 </script>
@@ -314,7 +441,7 @@
 				{/if}
 			{/if}
 		</section>
-	{:else}
+	{:else if activeTab === 'channels'}
 		<section class="space-y-5">
 			{#if !channelsLoaded}
 				<div class="text-sm text-slate-500">Загрузка…</div>
@@ -411,6 +538,160 @@
 						<span>{channelsError}</span>
 					</div>
 				{/if}
+			{/if}
+		</section>
+	{:else if activeTab === 'google'}
+		<section class="space-y-6">
+			{#if !googleLoaded}
+				<div class="text-sm text-slate-500">Загрузка…</div>
+			{:else if googleStatus}
+				<div class="card space-y-4 p-5">
+					<div class="flex items-start justify-between gap-3">
+						<div>
+							<h2 class="text-lg font-semibold tracking-tight">Google Service Account</h2>
+							<p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+								JSON-ключ для записи в Google Docs / Drive.
+								<a
+									href="https://console.cloud.google.com/iam-admin/serviceaccounts"
+									target="_blank"
+									rel="noreferrer"
+									class="text-sky-600 underline hover:text-sky-700"
+								>
+									Создать сервисный аккаунт
+								</a>
+								и сгенерировать JSON-ключ в Google Cloud Console.
+							</p>
+						</div>
+						{#if googleStatus.has_credentials}
+							<span class="pill-green shrink-0">загружен</span>
+						{:else}
+							<span class="pill-slate shrink-0">не загружен</span>
+						{/if}
+					</div>
+
+					{#if googleStatus.has_credentials && googleStatus.credentials_email}
+						<div class="rounded-lg bg-slate-50 px-3 py-2 text-xs dark:bg-slate-800/60">
+							<div class="text-slate-500">Email сервис-аккаунта (расшарьте на него Doc / папку):</div>
+							<code class="font-mono text-[12px]">{googleStatus.credentials_email}</code>
+						</div>
+					{/if}
+
+					<div class="flex flex-wrap items-center gap-3">
+						<input
+							type="file"
+							accept="application/json,.json"
+							bind:this={credsFileInput}
+							onchange={uploadCredentials}
+							class="text-sm"
+						/>
+						{#if googleStatus.has_credentials}
+							<button class="btn-danger btn-sm" onclick={deleteCredentials}>
+								Удалить
+							</button>
+						{/if}
+					</div>
+				</div>
+
+				<div class="card space-y-4 p-5">
+					<h2 class="text-lg font-semibold tracking-tight">Куда выгружать</h2>
+					<div class="grid gap-3 sm:grid-cols-2">
+						<label class="space-y-1.5 text-sm">
+							<span class="font-medium text-slate-700 dark:text-slate-300">
+								Google Doc ID или ссылка
+							</span>
+							<input
+								type="text"
+								bind:value={googleDocIdInput}
+								placeholder="https://docs.google.com/document/d/…/edit"
+								class="input font-mono text-[12px]"
+							/>
+						</label>
+						<label class="space-y-1.5 text-sm">
+							<span class="font-medium text-slate-700 dark:text-slate-300">
+								Drive folder ID или ссылка <span class="text-slate-400">(необязательно)</span>
+							</span>
+							<input
+								type="text"
+								bind:value={googleFolderIdInput}
+								placeholder="https://drive.google.com/drive/folders/…"
+								class="input font-mono text-[12px]"
+							/>
+						</label>
+					</div>
+					<div class="flex flex-wrap items-center gap-3">
+						<button class="btn-primary" onclick={saveGoogleSettings} disabled={googleSaving}>
+							{googleSaving ? 'Сохраняем…' : 'Сохранить'}
+						</button>
+						<button
+							class="btn-secondary"
+							onclick={testGoogle}
+							disabled={!googleStatus.has_credentials || !googleStatus.google_doc_id}
+						>
+							Проверить доступ
+						</button>
+						{#if googleTestResult}
+							<span class="text-xs text-emerald-600">✓ {googleTestResult}</span>
+						{/if}
+						{#if googleTestError}
+							<span class="text-xs text-rose-600">{googleTestError}</span>
+						{/if}
+					</div>
+				</div>
+
+				<div class="card space-y-4 p-5">
+					<div class="flex items-start justify-between gap-3">
+						<div>
+							<h2 class="text-lg font-semibold tracking-tight">NotebookLM</h2>
+							<p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+								Загрузите <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">storage_state.json</code> чтобы панель могла создавать ноутбуки и
+								добавлять источники от вашего имени.
+							</p>
+							<details class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+								<summary class="cursor-pointer text-sky-600 hover:underline">
+									Как получить файл
+								</summary>
+								<ol class="mt-2 ml-5 list-decimal space-y-1">
+									<li>Установите CLI: <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">pip install "notebooklm-py[browser]"</code></li>
+									<li>Установите браузер: <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">playwright install chromium</code></li>
+									<li>Авторизуйтесь: <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">notebooklm login</code></li>
+									<li>Загрузите файл <code class="rounded bg-slate-100 px-1 py-0.5 font-mono dark:bg-slate-800">~/.notebooklm/storage_state.json</code> сюда</li>
+								</ol>
+							</details>
+						</div>
+						{#if googleStatus.has_notebooklm_storage}
+							<span class="pill-green shrink-0">авторизован</span>
+						{:else}
+							<span class="pill-slate shrink-0">не авторизован</span>
+						{/if}
+					</div>
+					<div class="flex flex-wrap items-center gap-3">
+						<input
+							type="file"
+							accept="application/json,.json"
+							bind:this={nlmFileInput}
+							onchange={uploadNotebookLM}
+							class="text-sm"
+						/>
+						{#if googleStatus.has_notebooklm_storage}
+							<button class="btn-danger btn-sm" onclick={deleteNotebookLM}>
+								Удалить
+							</button>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			{#if googleError}
+				<div class="banner-error">
+					<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+						<path
+							fill-rule="evenodd"
+							d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
+							clip-rule="evenodd"
+						/>
+					</svg>
+					<span>{googleError}</span>
+				</div>
 			{/if}
 		</section>
 	{/if}

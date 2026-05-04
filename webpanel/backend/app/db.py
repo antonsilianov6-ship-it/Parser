@@ -92,6 +92,32 @@ def _apply_additive_migrations() -> None:
                 "ALTER TABLE telegram_accounts ADD COLUMN api_hash VARCHAR(64)"
             )
 
+        user_cols = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info(users)")
+        }
+        if "google_doc_id" not in user_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN google_doc_id VARCHAR(128)"
+            )
+        if "google_drive_folder_id" not in user_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN google_drive_folder_id VARCHAR(128)"
+            )
+
+        job_cols = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")
+        }
+        if "export_to_docs" not in job_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN export_to_docs INTEGER DEFAULT 0"
+            )
+        if "export_to_notebooklm" not in job_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN export_to_notebooklm INTEGER DEFAULT 0"
+            )
+
 
 def get_session() -> Iterator[Session]:
     """FastAPI dependency that yields a SQLModel session."""

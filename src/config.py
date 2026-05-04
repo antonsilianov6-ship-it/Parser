@@ -29,7 +29,10 @@ SESSION_PATH = os.environ.get(
     'PARSER_SESSION_PATH',
     os.path.join(SESSIONS_DIR, f'{SESSION_NAME}.session'),
 )
-CACHE_FILE = os.path.join(CACHE_DIR, 'cache.json')
+CACHE_FILE = os.environ.get(
+    'PARSER_CACHE_PATH',
+    os.path.join(CACHE_DIR, 'cache.json'),
+)
 LOG_FILE = os.path.join(LOG_DIR, 'parser.log')
 # Web-panel изолирует настройки и БД для каждого пользователя; jobs-runner
 # пробрасывает per-user пути через переменные окружения. Если они не заданы,
@@ -79,7 +82,22 @@ TELEGRAM_CONFIG = {
 GOOGLE_CONFIG = {
     'CREDS_PATH': os.path.join(BASE_DIR, 'google-credentials.json'),
     'DOC_ID': None,
+    'DRIVE_FOLDER_ID': None,
 }
+
+# Per-user изоляция: web-panel пробрасывает GOOGLE_CREDS_PATH / GOOGLE_DOC_ID /
+# GOOGLE_DRIVE_FOLDER_ID per job owner. Тот же подход, что для PARSER_DB_PATH —
+# применяем на уровне модуля, чтобы override не пропадал в short-circuit-режиме
+# load_config().
+_env_google_creds = os.environ.get('GOOGLE_CREDS_PATH')
+if _env_google_creds:
+    GOOGLE_CONFIG['CREDS_PATH'] = _env_google_creds
+_env_google_doc = os.environ.get('GOOGLE_DOC_ID')
+if _env_google_doc:
+    GOOGLE_CONFIG['DOC_ID'] = _env_google_doc
+_env_google_folder = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
+if _env_google_folder:
+    GOOGLE_CONFIG['DRIVE_FOLDER_ID'] = _env_google_folder
 
 # Настройки парсинга (по умолчанию, будут перезаписаны из config.json)
 PARSER_CONFIG = {

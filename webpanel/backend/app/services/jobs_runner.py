@@ -27,6 +27,7 @@ from sqlmodel import Session
 from app.db import get_engine
 from app.models.job import Job, JobMode, JobStatus
 from app.models.telegram_account import TelegramAccount
+from app.models.user import User
 from app.services import parser_files
 
 logger = logging.getLogger(__name__)
@@ -56,16 +57,26 @@ def _build_command(job: Job) -> list[str]:
     return cmd
 
 
-def _build_env(account: TelegramAccount, owner_user_id: int) -> dict[str, str]:
+def _build_env(
+    account: TelegramAccount,
+    owner_user_id: int,
+    *,
+    job: Job,
+    owner: User | None = None,
+) -> dict[str, str]:
     """Return a child env wired up for the *job owner's* per-user paths.
 
     - ``TELEGRAM_API_ID`` / ``TELEGRAM_API_HASH`` come from the chosen slot
       (which may be a shared slot owned by another user).
     - ``PARSER_SESSION_PATH`` points at the slot's ``.session`` file.
     - ``PARSER_CONFIG_PATH`` / ``PARSER_PROMPTS_PATH`` / ``PARSER_CHANNELS_PATH`` /
-      ``PARSER_DB_PATH`` always resolve to the *job owner's* per-user dir, so
-      a user running a parse with someone else's shared session still parses
-      their own channels and writes to their own DB.
+      ``PARSER_DB_PATH`` / ``PARSER_CACHE_PATH`` always resolve to the *job
+      owner's* per-user dir, so a user running a parse with someone else's
+      shared session still parses their own channels and writes to their own
+      DB.
+    - ``GOOGLE_CREDS_PATH`` / ``GOOGLE_DOC_ID`` / ``GOOGLE_DRIVE_FOLDER_ID``
+      and ``NOTEBOOKLM_AUTH_JSON`` are wired only when the job actually
+      requested an export — keeping the env clean otherwise.
     """
     env = os.environ.copy()
     if account.api_id is not None:
@@ -80,6 +91,33 @@ def _build_env(account: TelegramAccount, owner_user_id: int) -> dict[str, str]:
     env["PARSER_PROMPTS_PATH"] = str(parser_files.prompts_json_path(owner_user_id))
     env["PARSER_CHANNELS_PATH"] = str(parser_files.channels_txt_path(owner_user_id))
     env["PARSER_DB_PATH"] = str(parser_files.parser_db_path(owner_user_id))
+    env["PARSER_CACHE_PATH"] = str(parser_files.parser_cache_path(owner_user_id))
+
+    # Panel mode always sets PARSER_EXPORT_TO_DOCS / _TO_NOTEBOOKLM explicitly
+    # to "1" or "0" so the parser knows it should respect the gate (vs. the
+    # default CLI behaviour which always exports to Docs).
+    env["PARSER_EXPORT_TO_DOCS"] = "1" if job.export_to_docs else "0"
+    env["PARSER_EXPORT_TO_NOTEBOOKLM"] = "1" if job.export_to_notebooklm else "0"
+
+    if job.export_to_docs:
+        env["GOOGLE_CREDS_PATH"] = str(
+            parser_files.google_credentials_path(owner_user_id)
+        )
+        if owner is not None and owner.google_doc_id:
+            env["GOOGLE_DOC_ID"] = owner.google_doc_id
+        if owner is not None and owner.google_drive_folder_id:
+            env["GOOGLE_DRIVE_FOLDER_ID"] = owner.google_drive_folder_id
+
+    if job.export_to_notebooklm:
+        env["NOTEBOOKLM_AUTH_JSON"] = str(
+            parser_files.notebooklm_storage_path(owner_user_id)
+        )
+
+    # When either export is requested, ask the parser to wipe ``messages``
+    # after a successful export — entity / processed-link cache stays so
+    # we don't burn ``get_entity`` calls on the next run.
+    if job.export_to_docs or job.export_to_notebooklm:
+        env["PARSER_CLEAR_DB_AFTER_EXPORT"] = "1"
 
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -109,8 +147,9 @@ async def launch(job_id: int) -> None:
             db.add(job)
             db.commit()
             return
+        owner = db.get(User, job.owner_id)
         cmd = _build_command(job)
-        env = _build_env(account, job.owner_id)
+        env = _build_env(account, job.owner_id, job=job, owner=owner)
         log_path = Path(job.log_path)
 
     log_path.parent.mkdir(parents=True, exist_ok=True)

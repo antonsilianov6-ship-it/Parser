@@ -30,7 +30,8 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 		Accept: 'application/json',
 		...options.headers
 	};
-	if (options.body !== undefined) {
+	const isFormData = options.body instanceof FormData;
+	if (options.body !== undefined && !isFormData) {
 		headers['Content-Type'] = 'application/json';
 	}
 	const token = auth.token;
@@ -41,7 +42,12 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 	const response = await fetch(path, {
 		method: options.method ?? 'GET',
 		headers,
-		body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+		body:
+			options.body === undefined
+				? undefined
+				: isFormData
+					? (options.body as FormData)
+					: JSON.stringify(options.body),
 		signal: options.signal
 	});
 

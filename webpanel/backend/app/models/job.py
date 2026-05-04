@@ -56,6 +56,11 @@ class Job(SQLModel, table=True):
     exit_code: int | None = Field(default=None)
     log_path: str = Field(max_length=512)
 
+    # Post-parse export flags. At least one must be true for parse-mode jobs;
+    # this is enforced by the API schema, not at the DB layer.
+    export_to_docs: bool = Field(default=False)
+    export_to_notebooklm: bool = Field(default=False)
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     started_at: datetime | None = Field(default=None)
     ended_at: datetime | None = Field(default=None)

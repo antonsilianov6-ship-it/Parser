@@ -13,8 +13,14 @@
 	let newMode = $state<JobMode>('parse');
 	let newChannel = $state('');
 	let newExportFormat = $state<'csv' | 'json' | 'xml'>('csv');
+	let newExportToDocs = $state(true);
+	let newExportToNotebookLM = $state(false);
 	let submitting = $state(false);
 	let formError = $state<string | null>(null);
+
+	const parseExportInvalid = $derived(
+		newMode === 'parse' && !newExportToDocs && !newExportToNotebookLM
+	);
 
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -49,6 +55,11 @@
 			formError = 'Выберите авторизованный Telegram-аккаунт';
 			return;
 		}
+		if (parseExportInvalid) {
+			formError =
+				'Для parse-задачи нужно выбрать хотя бы один вариант выгрузки: Google Docs или NotebookLM';
+			return;
+		}
 		submitting = true;
 		formError = null;
 		try {
@@ -58,6 +69,10 @@
 			};
 			if (newMode === 'parse' && newChannel.trim()) {
 				body.channel = newChannel.trim();
+			}
+			if (newMode === 'parse') {
+				body.export_to_docs = newExportToDocs;
+				body.export_to_notebooklm = newExportToNotebookLM;
 			}
 			if (newMode === 'export') {
 				body.export_format = newExportFormat;
@@ -255,11 +270,29 @@
 			<button
 				type="submit"
 				class="btn-primary"
-				disabled={submitting || authorisedAccounts.length === 0}
+				disabled={submitting || authorisedAccounts.length === 0 || parseExportInvalid}
 			>
 				{submitting ? 'Запускаем…' : 'Запустить'}
 			</button>
 		</div>
+		{#if newMode === 'parse'}
+			<div class="mt-3 flex flex-wrap items-center gap-4 rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800/40">
+				<span class="font-medium text-slate-700 dark:text-slate-300">После парсинга:</span>
+				<label class="flex items-center gap-1.5">
+					<input type="checkbox" bind:checked={newExportToDocs} />
+					<span>Выгрузить в Google Docs</span>
+				</label>
+				<label class="flex items-center gap-1.5">
+					<input type="checkbox" bind:checked={newExportToNotebookLM} />
+					<span>Отправить в NotebookLM</span>
+				</label>
+				{#if parseExportInvalid}
+					<span class="text-xs text-amber-600">
+						Выберите хотя бы один вариант выгрузки
+					</span>
+				{/if}
+			</div>
+		{/if}
 		{#if formError}
 			<div class="banner-error mt-3">
 				<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
