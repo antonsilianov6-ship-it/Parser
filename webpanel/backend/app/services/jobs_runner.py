@@ -28,7 +28,7 @@ from app.db import get_engine
 from app.models.job import Job, JobMode, JobStatus
 from app.models.telegram_account import TelegramAccount
 from app.models.user import User
-from app.services import parser_files
+from app.services import parser_files, rotation
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +211,14 @@ async def _finalize_in_background(
             pass
         _running.pop(job_id, None)
 
+    # Decide whether we should auto-retry instead of marking failed. The
+    # rotation logic only kicks in for non-cancelled, non-zero exits on
+    # parse-mode jobs that opted into rotation and still have retries left.
+    if exit_code != 0:
+        decision = await _maybe_rotate(job_id)
+        if decision is not None:
+            return
+
     with Session(get_engine()) as db:
         job = db.get(Job, job_id)
         if job is None:
@@ -225,6 +233,78 @@ async def _finalize_in_background(
         job.ended_at = datetime.now(tz=UTC)
         db.add(job)
         db.commit()
+
+
+async def _maybe_rotate(job_id: int) -> str | None:
+    """Inspect ``job_id``'s log; if the failure is transient, retry.
+
+    Returns the chosen action (``"retry_same_slot"`` /
+    ``"retry_next_slot"``) when the runner has scheduled a relaunch, or
+    ``None`` when the caller should proceed to mark the job failed.
+    """
+    with Session(get_engine()) as db:
+        job = db.get(Job, job_id)
+        if job is None:
+            return None
+        if job.status == JobStatus.cancelled:
+            return None
+        if not job.allow_rotation or job.mode != JobMode.parse:
+            return None
+        if job.retry_count >= rotation.MAX_RETRIES:
+            return None
+
+        log_path = Path(job.log_path)
+        failure = rotation.classify_failure(log_path)
+        if failure.kind == "unknown":
+            return None
+
+        if failure.kind == "floodwait_short":
+            delay = max(1, failure.floodwait_seconds)
+            _write_log(
+                log_path,
+                f"\n--- auto-rotation: FloodWait {delay}s, retrying same "
+                f"slot (attempt {job.retry_count + 2}/{rotation.MAX_RETRIES + 1}) ---\n",
+            )
+            new_account_id: int | None = None
+        else:
+            next_slot = rotation.pick_next_slot(
+                db,
+                owner_id=job.owner_id,
+                current_account_id=job.telegram_account_id,
+            )
+            if next_slot is None or next_slot.id is None:
+                _write_log(
+                    log_path,
+                    "\n--- auto-rotation: no other authorised slot available, "
+                    "giving up ---\n",
+                )
+                return None
+            _write_log(
+                log_path,
+                f"\n--- auto-rotation: {failure.kind}, swapping slot "
+                f"{job.telegram_account_id} -> {next_slot.id} "
+                f"(attempt {job.retry_count + 2}/{rotation.MAX_RETRIES + 1}) ---\n",
+            )
+            new_account_id = next_slot.id
+            delay = 0
+
+        job.retry_count += 1
+        if new_account_id is not None:
+            job.telegram_account_id = new_account_id
+        job.status = JobStatus.pending
+        job.pid = None
+        job.started_at = None
+        db.add(job)
+        db.commit()
+
+    if delay:
+        await asyncio.sleep(delay)
+    # Await directly: ``launch`` returns once the new subprocess has been
+    # spawned (the long-lived wait is in another ``_finalize_in_background``
+    # task), and we're already running inside a background task, so this
+    # doesn't block any request handler.
+    await launch(job_id)
+    return "retry_same_slot" if new_account_id is None else "retry_next_slot"
 
 
 async def cancel(job_id: int) -> bool:

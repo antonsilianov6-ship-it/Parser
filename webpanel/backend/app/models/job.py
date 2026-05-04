@@ -61,6 +61,14 @@ class Job(SQLModel, table=True):
     export_to_docs: bool = Field(default=False)
     export_to_notebooklm: bool = Field(default=False)
 
+    # Rotation policy. When ``allow_rotation`` is true the runner will try
+    # up to ``MAX_RETRIES`` automatic restarts on transient failures
+    # (Telethon FloodWait, SessionRevoked, AuthKeyError) — short FloodWaits
+    # retry the same slot after a sleep, longer / revoked failures swap to
+    # the next authorised slot owned by ``owner_id``.
+    allow_rotation: bool = Field(default=True)
+    retry_count: int = Field(default=0)
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     started_at: datetime | None = Field(default=None)
     ended_at: datetime | None = Field(default=None)

@@ -30,6 +30,8 @@ def _to_read(job: Job) -> JobRead:
         export_format=job.export_format,
         export_to_docs=job.export_to_docs,
         export_to_notebooklm=job.export_to_notebooklm,
+        allow_rotation=job.allow_rotation,
+        retry_count=job.retry_count,
         status=job.status,
         pid=job.pid,
         exit_code=job.exit_code,
@@ -113,6 +115,7 @@ async def create_job(
         export_format=payload.export_format,
         export_to_docs=payload.export_to_docs,
         export_to_notebooklm=payload.export_to_notebooklm,
+        allow_rotation=payload.allow_rotation,
         status=JobStatus.pending,
         log_path="",
     )

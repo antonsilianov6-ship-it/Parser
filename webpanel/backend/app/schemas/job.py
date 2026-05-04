@@ -22,6 +22,12 @@ class JobCreate(BaseModel):
     export_to_docs: bool = False
     export_to_notebooklm: bool = False
 
+    # If true (default), the runner will try to recover from transient
+    # Telethon failures (FloodWait, SessionRevoked, AuthKeyError) by
+    # waiting and/or rotating to the next authorised slot of the same
+    # owner. Up to ``MAX_RETRIES`` automatic relaunches per Job.
+    allow_rotation: bool = True
+
     @model_validator(mode="after")
     def _validate(self) -> JobCreate:
         if self.mode == JobMode.export:
@@ -48,6 +54,8 @@ class JobRead(BaseModel):
     export_format: str | None
     export_to_docs: bool
     export_to_notebooklm: bool
+    allow_rotation: bool
+    retry_count: int
     status: JobStatus
     pid: int | None
     exit_code: int | None
