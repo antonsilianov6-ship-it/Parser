@@ -49,6 +49,17 @@ class Settings(BaseSettings):
         "under '/' (with SPA fallback). Leave unset in API-only deployments.",
     )
 
+    browser_cdp_url: str = Field(
+        default="http://browser:9222",
+        description="CDP endpoint of the headed Chromium service used for "
+        "interactive Google / NotebookLM logins.",
+    )
+    browser_public_url: str = Field(
+        default="http://localhost:6080",
+        description="Externally reachable noVNC URL embedded in the SPA "
+        "iframe. Set to your VPS hostname/IP in production.",
+    )
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

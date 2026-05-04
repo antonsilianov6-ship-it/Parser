@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.db import init_db
 from app.routers import (
     auth,
+    browser_auth,
     google,
     health,
     jobs,
@@ -21,13 +22,20 @@ from app.routers import (
     telegram_accounts,
     users,
 )
+from app.services.browser_session import get_manager as get_browser_manager
 from app.static import mount_frontend
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
-    yield
+    try:
+        yield
+    finally:
+        # Make sure any in-flight noVNC login session is torn down
+        # (Playwright connections + the visible Chromium tab) when
+        # uvicorn shuts down or the test client lifecycle ends.
+        await get_browser_manager(get_settings()).shutdown()
 
 
 def create_app() -> FastAPI:
@@ -55,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(parser_config.router)
     app.include_router(parser_db.router)
     app.include_router(google.router)
+    app.include_router(browser_auth.router)
 
     if settings.frontend_dir is not None:
         mount_frontend(app, settings.frontend_dir)

@@ -19,6 +19,15 @@ services:
       # Disable open registration in production. The first admin is created
       # via a one-time POST /api/users/bootstrap call after first start.
       PANEL_ALLOW_REGISTRATION: "false"
+      # The panel orchestrates a headed Chromium in the ``browser`` service
+      # to let users log into NotebookLM via noVNC. CDP is reached over the
+      # docker network; PUBLIC_URL is what the browser iframe in the SPA
+      # will load (defaults to localhost — set PANEL_BROWSER_PUBLIC_URL in
+      # your .env to your VPS hostname/IP for remote use).
+      PANEL_BROWSER_CDP_URL: "${PANEL_BROWSER_CDP_URL:-http://browser:9222}"
+      PANEL_BROWSER_PUBLIC_URL: "${PANEL_BROWSER_PUBLIC_URL:-http://localhost:6080}"
+    depends_on:
+      - browser
     volumes:
       # Editable parser config — mount host files so /api/parser/config writes persist.
       - ./config.json:/app/config.json
@@ -32,5 +41,22 @@ services:
       # Backend's own SQLite (users / telegram-accounts / jobs metadata).
       - panel-state:/app/webpanel/backend/data
 
+  browser:
+    build:
+      context: ./webpanel/browser
+      dockerfile: Dockerfile
+    image: parser-browser:latest
+    container_name: parser-browser
+    restart: unless-stopped
+    # Only the noVNC port is mapped to the host so users can embed
+    # the iframe; CDP stays on the internal docker network.
+    ports:
+      - "${BROWSER_NOVNC_PORT:-6080}:6080"
+    volumes:
+      # Persist Chromium profile (caches, leftover cookies) so a
+      # half-completed login can be resumed.
+      - browser-profile:/data
+
 volumes:
   panel-state:
+  browser-profile:
