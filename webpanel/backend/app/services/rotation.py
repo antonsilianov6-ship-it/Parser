@@ -104,9 +104,12 @@ def pick_next_slot(
 
     Visibility rule mirrors ``_account_visible_to`` in the jobs router:
     a user can use slots they own plus any slot marked ``is_shared``.
-    Selection is deterministic (ascending id, wrapping past the current
-    slot), so consecutive failures cycle through every available slot
-    before giving up.
+    Selection is deterministic and **wraps past the current slot**: with
+    slots ``[1, 2, 3]`` starting on slot 2 we try 3 first, then 1, then
+    give up — never bouncing back to slot 2 itself. This matters for
+    ``session_revoked`` failures where the runner cumulatively retries
+    different slots and we don't want to ping-pong between two of them
+    while a third never gets tried.
     """
     statement = (
         select(TelegramAccount)
@@ -114,7 +117,14 @@ def pick_next_slot(
         .where(TelegramAccount.id != current_account_id)
         .order_by(TelegramAccount.id)  # type: ignore[arg-type]
     )
-    for candidate in session.exec(statement):
-        if candidate.owner_id == owner_id or candidate.is_shared:
-            return candidate
-    return None
+    candidates = [
+        c
+        for c in session.exec(statement)
+        if c.id is not None and (c.owner_id == owner_id or c.is_shared)
+    ]
+    # Slots with id > current first (the "next" wrap segment), then
+    # slots with smaller id (the "wrap-around" segment).
+    after = [c for c in candidates if c.id > current_account_id]  # type: ignore[operator]
+    before = [c for c in candidates if c.id < current_account_id]  # type: ignore[operator]
+    ordered = after + before
+    return ordered[0] if ordered else None

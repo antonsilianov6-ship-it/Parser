@@ -151,6 +151,30 @@ def test_pick_next_slot_picks_shared_slot_from_other_owner(
         assert chosen is not None and chosen.id == shared_id
 
 
+def test_pick_next_slot_wraps_past_current(client: pytest.FixtureRequest) -> None:
+    """With slots [1, 2, 3] starting on slot 2 we should try 3, then 1.
+
+    Regression: previously the picker just returned the lowest-id slot
+    that wasn't the current one, so consecutive rotations from slot 2
+    would alternate 2→1→2→1 and slot 3 would never be tried.
+    """
+    bootstrap_login(client)
+    a1 = _seed_account(owner_id=1, label="a1")  # id=1
+    a2 = _seed_account(owner_id=1, label="a2")  # id=2
+    a3 = _seed_account(owner_id=1, label="a3")  # id=3
+
+    with Session(get_engine()) as db:
+        # First rotation: from 2 → 3 (id > current)
+        first = rotation.pick_next_slot(db, owner_id=1, current_account_id=a2)
+        assert first is not None and first.id == a3
+        # Second rotation: from 3 → 1 (wrap, smallest id)
+        second = rotation.pick_next_slot(db, owner_id=1, current_account_id=a3)
+        assert second is not None and second.id == a1
+        # Third rotation: from 1 → 2 (next id > 1)
+        third = rotation.pick_next_slot(db, owner_id=1, current_account_id=a1)
+        assert third is not None and third.id == a2
+
+
 def test_pick_next_slot_skips_unauthorised_slots(client: pytest.FixtureRequest) -> None:
     bootstrap_login(client)
     a1 = _seed_account(owner_id=1, label="a1")
