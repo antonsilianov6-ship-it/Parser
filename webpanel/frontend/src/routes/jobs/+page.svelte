@@ -15,6 +15,7 @@
 	let newExportFormat = $state<'csv' | 'json' | 'xml'>('csv');
 	let newExportToDocs = $state(true);
 	let newExportToNotebookLM = $state(false);
+	let newAllowRotation = $state(true);
 	let submitting = $state(false);
 	let formError = $state<string | null>(null);
 
@@ -73,6 +74,7 @@
 			if (newMode === 'parse') {
 				body.export_to_docs = newExportToDocs;
 				body.export_to_notebooklm = newExportToNotebookLM;
+				body.allow_rotation = newAllowRotation;
 			}
 			if (newMode === 'export') {
 				body.export_format = newExportFormat;
@@ -286,6 +288,10 @@
 					<input type="checkbox" bind:checked={newExportToNotebookLM} />
 					<span>Отправить в NotebookLM</span>
 				</label>
+				<label class="flex items-center gap-1.5" title="При FloodWait или SessionRevoked перезапустить задачу — на коротком FloodWait тем же аккаунтом, иначе следующим авторизованным слотом владельца. До 3 попыток.">
+					<input type="checkbox" bind:checked={newAllowRotation} />
+					<span>Авто-ротация при сбое</span>
+				</label>
 				{#if parseExportInvalid}
 					<span class="text-xs text-amber-600">
 						Выберите хотя бы один вариант выгрузки
@@ -364,6 +370,14 @@
 							{#if job.exit_code !== null && job.exit_code !== undefined}
 								<span class="ml-1 font-mono text-[11px] text-slate-400">
 									exit={job.exit_code}
+								</span>
+							{/if}
+							{#if job.retry_count > 0}
+								<span
+									class="ml-1 font-mono text-[11px] text-amber-600"
+									title="Авто-ротация: задача была перезапущена после транзиентной ошибки Telethon"
+								>
+									retry={job.retry_count}
 								</span>
 							{/if}
 						</td>

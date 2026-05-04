@@ -117,6 +117,14 @@ def _apply_additive_migrations() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE jobs ADD COLUMN export_to_notebooklm INTEGER DEFAULT 0"
             )
+        if "allow_rotation" not in job_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN allow_rotation INTEGER DEFAULT 1"
+            )
+        if "retry_count" not in job_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN retry_count INTEGER DEFAULT 0"
+            )
 
 
 def get_session() -> Iterator[Session]:

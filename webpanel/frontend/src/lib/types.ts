@@ -49,6 +49,8 @@ export interface Job {
 	export_format: string | null;
 	export_to_docs: boolean;
 	export_to_notebooklm: boolean;
+	allow_rotation: boolean;
+	retry_count: number;
 	status: JobStatus;
 	pid: number | null;
 	exit_code: number | null;
