@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.db import init_db
 from app.routers import (
     auth,
+    google,
     health,
     jobs,
     parser_config,
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(parser_config.router)
     app.include_router(parser_db.router)
+    app.include_router(google.router)
 
     if settings.frontend_dir is not None:
         mount_frontend(app, settings.frontend_dir)

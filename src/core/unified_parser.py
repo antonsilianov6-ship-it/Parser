@@ -33,7 +33,10 @@ class UnifiedParser:
         self.cache_manager = CacheManager()
         self.error_handler = ErrorHandler()
         self.db = Database(DATABASE_CONFIG['DB_PATH'])
-        self.docs_exporter = GoogleDocsExporter()
+        # GoogleDocsExporter is constructed lazily so parse-only or
+        # NotebookLM-only runs (panel mode without a Service Account JSON)
+        # don't crash at startup trying to load credentials from disk.
+        self._docs_exporter: Optional[GoogleDocsExporter] = None
         self.message_fetcher: Optional[MessageFetcher] = None
         self.comment_fetcher: Optional[CommentFetcher] = None
         self.topic_manager: Optional[TopicManager] = None
@@ -43,7 +46,19 @@ class UnifiedParser:
             'start_time': None, 'end_time': None
         }
         self.is_running = False
-    
+
+    @property
+    def docs_exporter(self) -> GoogleDocsExporter:
+        """Lazy-init the Docs exporter on first use.
+
+        Skipping eager construction means a parse run that doesn't need
+        Google Docs (e.g. panel-managed NotebookLM-only mode) won't fail
+        in ``__init__`` if ``google-credentials.json`` is missing.
+        """
+        if self._docs_exporter is None:
+            self._docs_exporter = GoogleDocsExporter()
+        return self._docs_exporter
+
     async def init_async(self) -> None:
         """Асинхронная инициализация парсера"""
         logger.info("Асинхронная инициализация UnifiedParser")

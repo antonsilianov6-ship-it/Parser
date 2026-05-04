@@ -14,8 +14,28 @@ from sqlmodel import Session
 from app.db import get_engine
 from app.models.job import Job, JobStatus
 from app.models.telegram_account import TelegramAccount
-from app.services import jobs_runner
+from app.models.user import User
+from app.services import jobs_runner, parser_files
 from tests.conftest import auth_header, bootstrap_login
+
+
+def _seed_docs_creds(user_id: int, doc_id: str = "doc-stub-1") -> None:
+    """Pre-populate per-user Google creds so parse-mode jobs can be created."""
+    parser_files.write_google_credentials(
+        user_id,
+        {
+            "type": "service_account",
+            "client_email": "sa@example.iam.gserviceaccount.com",
+            "private_key": "PRIV",
+            "project_id": "proj",
+        },
+    )
+    with Session(get_engine()) as db:
+        user = db.get(User, user_id)
+        assert user is not None
+        user.google_doc_id = doc_id
+        db.add(user)
+        db.commit()
 
 
 @pytest.fixture
@@ -59,6 +79,34 @@ def test_create_job_records_pending_state(
     stub_launch: list[int],
 ) -> None:
     token, account = authorised_account
+    _seed_docs_creds(1)
+    response = client.post(
+        "/api/jobs",
+        json={
+            "telegram_account_id": account["id"],
+            "mode": "parse",
+            "channel": "@example",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["channel"] == "@example"
+    assert body["mode"] == "parse"
+    assert body["export_to_docs"] is True
+    assert body["export_to_notebooklm"] is False
+    assert stub_launch == [body["id"]]
+
+
+def test_create_parse_job_requires_at_least_one_export(
+    client: TestClient,
+    authorised_account: tuple[str, dict],
+    stub_launch: list[int],
+) -> None:
+    """Parse jobs without any export target must be rejected by Pydantic."""
+    token, account = authorised_account
     response = client.post(
         "/api/jobs",
         json={
@@ -68,12 +116,32 @@ def test_create_job_records_pending_state(
         },
         headers=auth_header(token),
     )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert body["status"] == "pending"
-    assert body["channel"] == "@example"
-    assert body["mode"] == "parse"
-    assert stub_launch == [body["id"]]
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    msg = " ".join(item.get("msg", "") for item in detail).lower()
+    assert "выгрузки" in msg or "google docs" in msg
+    assert stub_launch == []
+
+
+def test_create_parse_job_requires_uploaded_creds(
+    client: TestClient,
+    authorised_account: tuple[str, dict],
+    stub_launch: list[int],
+) -> None:
+    """Even with the box ticked, parse rejects until creds are uploaded."""
+    token, account = authorised_account
+    response = client.post(
+        "/api/jobs",
+        json={
+            "telegram_account_id": account["id"],
+            "mode": "parse",
+            "export_to_docs": True,
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 400, response.text
+    assert "service account" in response.json()["detail"].lower()
+    assert stub_launch == []
 
 
 def test_create_job_rejects_unauthorised_slot(
@@ -88,7 +156,11 @@ def test_create_job_rejects_unauthorised_slot(
     ).json()
     response = client.post(
         "/api/jobs",
-        json={"telegram_account_id": account["id"], "mode": "parse"},
+        json={
+            "telegram_account_id": account["id"],
+            "mode": "parse",
+            "export_to_docs": True,
+        },
         headers=auth_header(token),
     )
     assert response.status_code == 400
@@ -115,7 +187,11 @@ def test_create_job_rejects_other_users_private_slot(
 
     response = client.post(
         "/api/jobs",
-        json={"telegram_account_id": account["id"], "mode": "parse"},
+        json={
+            "telegram_account_id": account["id"],
+            "mode": "parse",
+            "export_to_docs": True,
+        },
         headers=auth_header(bob_token),
     )
     assert response.status_code == 403
@@ -160,9 +236,14 @@ def test_cancel_only_for_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     token, account = authorised_account
+    _seed_docs_creds(1)
     job = client.post(
         "/api/jobs",
-        json={"telegram_account_id": account["id"], "mode": "parse"},
+        json={
+            "telegram_account_id": account["id"],
+            "mode": "parse",
+            "export_to_docs": True,
+        },
         headers=auth_header(token),
     ).json()
 

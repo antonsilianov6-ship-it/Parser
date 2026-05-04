@@ -47,6 +47,8 @@ export interface Job {
 	mode: JobMode;
 	channel: string | null;
 	export_format: string | null;
+	export_to_docs: boolean;
+	export_to_notebooklm: boolean;
 	status: JobStatus;
 	pid: number | null;
 	exit_code: number | null;

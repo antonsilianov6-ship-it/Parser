@@ -10,10 +10,11 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import or_, select
 
 from app.deps import CurrentUser, SessionDep
-from app.models.job import Job, JobStatus
+from app.models.job import Job, JobMode, JobStatus
 from app.models.telegram_account import TelegramAccount
+from app.models.user import User
 from app.schemas.job import JobCreate, JobRead
-from app.services import jobs_runner
+from app.services import jobs_runner, parser_files
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -27,6 +28,8 @@ def _to_read(job: Job) -> JobRead:
         mode=job.mode,
         channel=job.channel,
         export_format=job.export_format,
+        export_to_docs=job.export_to_docs,
+        export_to_notebooklm=job.export_to_notebooklm,
         status=job.status,
         pid=job.pid,
         exit_code=job.exit_code,
@@ -69,12 +72,47 @@ async def create_job(
             detail="Telegram account is not authorised yet",
         )
 
+    # For parse-mode the schema already enforces that at least one export
+    # target was picked. Here we additionally check the user has the matching
+    # credentials uploaded — otherwise the parser would parse for nothing
+    # and burn TG limits.
+    if payload.mode == JobMode.parse:
+        if payload.export_to_docs and not parser_files.has_google_credentials(
+            current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Для экспорта в Google Docs сначала загрузите Service Account "
+                    "JSON в Настройки → Google"
+                ),
+            )
+        if payload.export_to_docs:
+            user = session.get(User, current_user.id)
+            if user is None or not user.google_doc_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Укажите Google Doc ID в Настройки → Google",
+                )
+        if payload.export_to_notebooklm and not parser_files.has_notebooklm_storage(
+            current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Для NotebookLM сначала загрузите storage_state.json в "
+                    "Настройки → Google"
+                ),
+            )
+
     job = Job(
         owner_id=current_user.id,
         telegram_account_id=payload.telegram_account_id,
         mode=payload.mode,
         channel=payload.channel,
         export_format=payload.export_format,
+        export_to_docs=payload.export_to_docs,
+        export_to_notebooklm=payload.export_to_notebooklm,
         status=JobStatus.pending,
         log_path="",
     )

@@ -15,6 +15,14 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.core.unified_parser import UnifiedParser
+from src.export.post_parse import (
+    clear_db_after_export,
+    clear_messages_table,
+    docs_enabled,
+    export_to_notebooklm_via_file,
+    is_panel_managed,
+    notebooklm_enabled,
+)
 from src.utils.logger import setup_logger
 from src.config import validate_config
 
@@ -54,26 +62,78 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _run_post_parse_exports(messages, logger) -> bool:
+    """Запускает экспорт-шаги (Docs / NotebookLM) и опциональную чистку БД.
+
+    Управляется env-флагами от web-panel:
+    - ``PARSER_EXPORT_TO_DOCS=1`` / ``PARSER_EXPORT_TO_NOTEBOOKLM=1`` — что делать;
+    - ``PARSER_CLEAR_DB_AFTER_EXPORT=1`` — удалить ``messages`` после успеха.
+
+    При CLI-запуске (без панели) ведёт себя как раньше: экспорт в Docs всегда,
+    NotebookLM не вызывается, БД не чистится.
+    """
+    if not messages:
+        return True
+
+    success = True
+    panel = is_panel_managed()
+
+    if docs_enabled():
+        try:
+            from src.config import GOOGLE_CONFIG
+            logger.info(
+                f"Экспорт {len(messages)} новых сообщений в Google Docs "
+                f"(creds={GOOGLE_CONFIG.get('CREDS_PATH')!r})"
+            )
+            from src.export.google_docs import GoogleDocsExporter
+            from src.config import get_google_config
+            exporter = GoogleDocsExporter()
+            batch_size = get_google_config().get("BATCH_SIZE", 100)
+            exporter.append_new_content(messages, batch_size=batch_size)
+            print(f"\n✓ Экспортировано {len(messages)} новых сообщений в Google Docs")
+        except Exception as exc:
+            logger.error("Ошибка экспорта в Google Docs: %s", exc, exc_info=True)
+            success = False
+    elif panel:
+        logger.info("Google Docs экспорт отключён в панели — пропускаем")
+
+    if notebooklm_enabled():
+        logger.info("Экспорт %s сообщений в NotebookLM…", len(messages))
+        nlm_ok = await export_to_notebooklm_via_file(messages)
+        if nlm_ok:
+            print(f"\n✓ Загружено {len(messages)} сообщений в NotebookLM")
+        else:
+            success = False
+
+    if success and clear_db_after_export():
+        logger.info("Очистка messages в parser.db после успешного экспорта…")
+        try:
+            removed = clear_messages_table()
+            print(f"\n✓ Удалено {removed} строк из parser.db (entity-cache сохранён)")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Ошибка очистки messages: %s", exc, exc_info=True)
+            success = False
+
+    return success
+
+
 async def run_parse_mode(parser: UnifiedParser, args: argparse.Namespace, logger) -> bool:
     """Режим парсинга каналов"""
     try:
         logger.info("=== Режим парсинга ===")
-        
+
         if args.channel:
             logger.info(f"Парсинг канала: {args.channel}")
             messages = await parser.parse_channel(args.channel)
-            
+
             if messages:
                 logger.info(f"Получено {len(messages)} сообщений из канала {args.channel}")
                 processed = await parser.process_messages(messages, args.channel)
                 logger.info(f"Обработано {len(processed)} сообщений")
-                
-                # Экспорт в Google Docs
+
                 if processed:
-                    logger.info("Экспорт новых сообщений в Google Docs...")
-                    await parser.export_to_google_docs(processed)
-                    print(f"\n✓ Экспортировано {len(processed)} новых сообщений в Google Docs")
-                
+                    return await _run_post_parse_exports(processed, logger)
+
                 return True
             else:
                 logger.warning(f"Не удалось получить сообщения из канала {args.channel}")
@@ -83,24 +143,20 @@ async def run_parse_mode(parser: UnifiedParser, args: argparse.Namespace, logger
             result = await parser.parse_channels()
             total_messages = sum(len(msgs) for msgs in result.values())
             logger.info(f"Парсинг завершен: {len(result)} каналов, {total_messages} сообщений")
-            
-            # Обработка и экспорт новых сообщений
+
             all_new_messages = []
             for channel_name, messages in result.items():
                 new_messages = await parser.process_messages(messages, channel_name)
                 all_new_messages.extend(new_messages)
-            
+
             if all_new_messages:
                 logger.info(f"Найдено {len(all_new_messages)} новых сообщений для экспорта")
-                logger.info("Экспорт новых сообщений в Google Docs...")
-                await parser.export_to_google_docs(all_new_messages)
-                print(f"\n✓ Экспортировано {len(all_new_messages)} новых сообщений в Google Docs")
-            else:
-                logger.info("Нет новых сообщений для экспорта")
-                print("\n✓ Парсинг завершен. Новых сообщений не найдено.")
-            
+                return await _run_post_parse_exports(all_new_messages, logger)
+
+            logger.info("Нет новых сообщений для экспорта")
+            print("\n✓ Парсинг завершен. Новых сообщений не найдено.")
             return True
-            
+
     except Exception as e:
         logger.error(f"Ошибка в режиме парсинга: {e}", exc_info=True)
         return False

@@ -69,6 +69,118 @@ def parser_db_path(user_id: int) -> Path:
     return user_dir(user_id) / "parser.db"
 
 
+def google_credentials_path(user_id: int) -> Path:
+    """Per-user Google service-account JSON for Drive / Docs API."""
+    return user_dir(user_id) / "google-credentials.json"
+
+
+def notebooklm_storage_path(user_id: int) -> Path:
+    """Per-user NotebookLM ``storage_state.json`` (cookies + localStorage).
+
+    Format matches what ``notebooklm-py`` produces via ``notebooklm login``.
+    """
+    return user_dir(user_id) / "notebooklm_storage.json"
+
+
+def parser_cache_path(user_id: int) -> Path:
+    """Per-user entity / processed-link cache (corresponds to ``cache/cache.json``)."""
+    cache_dir = user_dir(user_id) / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "cache.json"
+
+
+def has_google_credentials(user_id: int) -> bool:
+    return google_credentials_path(user_id).exists()
+
+
+def has_notebooklm_storage(user_id: int) -> bool:
+    return notebooklm_storage_path(user_id).exists()
+
+
+def write_google_credentials(user_id: int, payload: dict[str, Any] | str) -> None:
+    """Write a Google service-account JSON to the user's directory.
+
+    Accepts either a parsed dict or the raw JSON string straight from the
+    uploaded file. Validates that the file looks like a service account
+    (``type == "service_account"``) before writing so we fail early with a
+    helpful error instead of producing 500s downstream.
+    """
+    if isinstance(payload, str):
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Файл не является валидным JSON") from exc
+    else:
+        data = payload
+
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        raise ValueError(
+            "Это не похоже на Google Service Account: ожидался JSON с "
+            "полем 'type': 'service_account'"
+        )
+    for required in ("client_email", "private_key", "project_id"):
+        if not data.get(required):
+            raise ValueError(f"В JSON отсутствует обязательное поле '{required}'")
+
+    _write_json_atomically(google_credentials_path(user_id), data)
+
+
+def delete_google_credentials(user_id: int) -> None:
+    path = google_credentials_path(user_id)
+    if path.exists():
+        path.unlink()
+
+
+def google_credentials_email(user_id: int) -> str | None:
+    """Return the service-account email so the UI can display it.
+
+    The email is the only piece of the JSON that's safe to expose — it's also
+    the one piece the user needs to know in order to share their Drive doc /
+    folder with the service account.
+    """
+    path = google_credentials_path(user_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    email = data.get("client_email")
+    return email if isinstance(email, str) else None
+
+
+def write_notebooklm_storage(user_id: int, payload: dict[str, Any] | str) -> None:
+    """Persist a Playwright ``storage_state.json`` for NotebookLM.
+
+    notebooklm-py expects a Playwright storage-state object — a dict containing
+    at minimum ``cookies`` (list) and ``origins`` (list). We sanity-check the
+    shape but don't touch the contents.
+    """
+    if isinstance(payload, str):
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Файл не является валидным JSON") from exc
+    else:
+        data = payload
+
+    if not isinstance(data, dict):
+        raise ValueError("storage_state.json должен быть JSON-объектом")
+    if "cookies" not in data and "origins" not in data:
+        raise ValueError(
+            "Это не похоже на storage_state.json от notebooklm-py: "
+            "ожидались ключи 'cookies' и/или 'origins'"
+        )
+
+    _write_json_atomically(notebooklm_storage_path(user_id), data)
+
+
+def delete_notebooklm_storage(user_id: int) -> None:
+    path = notebooklm_storage_path(user_id)
+    if path.exists():
+        path.unlink()
+
+
 # Legacy paths in the repo root. Used as one-time templates when seeding a new
 # user's directory; the parser itself no longer reads them when run from the
 # web panel because jobs_runner overrides them via environment variables.
