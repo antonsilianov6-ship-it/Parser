@@ -116,10 +116,15 @@ def _add_or_replace_job(schedule: Schedule) -> None:
     )
     # ``get_job`` can return None during a concurrent shutdown or if
     # APScheduler couldn't persist the job for some reason — guard the
-    # dereference exactly like ``_fire_schedule`` does below.
+    # dereference exactly like ``_fire_schedule`` does below. If the
+    # job didn't materialise we have no honest next-run time, so clear
+    # the field to None rather than leaving a stale value that the UI
+    # would happily display.
     ap_job = _scheduler.get_job(_job_id(schedule.id))
     if ap_job is not None:
         schedule.next_run_at = ap_job.next_run_time
+    else:
+        schedule.next_run_at = None
 
 
 async def _fire_schedule(schedule_id: int) -> None:
