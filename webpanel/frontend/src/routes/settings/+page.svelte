@@ -602,7 +602,18 @@
 									</td>
 								</tr>
 							{/if}
-							{#each filteredChannels as { url, idx } (url)}
+							<!--
+								Key by ``idx`` (not ``url``) so a channels.txt
+								file with accidentally repeated URLs doesn't
+								crash the panel with ``each_key_duplicate``.
+								When the duplicate happens, Svelte's failed
+								effect cascades into the always-mounted Config
+								/ Prompts tabpanels above and freezes their
+								``hidden`` bindings, which leaves the previous
+								JsonEditor visible underneath the now-blank
+								Channels tab.
+							-->
+							{#each filteredChannels as { url, idx } (idx)}
 								<tr>
 									<td class="font-mono text-xs text-slate-500">{idx + 1}</td>
 									<td class="font-mono text-xs">{url}</td>
