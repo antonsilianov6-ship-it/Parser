@@ -267,3 +267,103 @@ def test_other_user_cant_see_session(
         "/api/google/notebooklm/auth/start", headers=auth_header(alice_token)
     )
     assert response.status_code == 409
+
+
+def test_other_user_can_take_over_idle_session(
+    client: TestClient, patched_browser: dict[str, Any]
+) -> None:
+    """A second user must be able to start a session once the first is idle.
+
+    Without an idle-takeover threshold a single abandoned tab would
+    pin the shared Chromium for the full ``SESSION_TIMEOUT_SECONDS``
+    (10 minutes). We simulate the abandonment by rewinding
+    ``last_polled_at`` past ``SESSION_IDLE_TAKEOVER_SECONDS`` and
+    confirm Alice's start now succeeds.
+    """
+    from app.config import get_settings
+    from app.services.browser_session import (
+        SESSION_IDLE_TAKEOVER_SECONDS,
+        get_manager,
+    )
+
+    admin_token = bootstrap_login(client)
+    admin_start = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(admin_token)
+    ).json()
+
+    create_resp = client.post(
+        "/api/users",
+        json={"username": "alice", "password": "alicepwd123"},
+        headers=auth_header(admin_token),
+    )
+    assert create_resp.status_code == 201
+
+    alice_login = client.post(
+        "/api/auth/login",
+        json={"username": "alice", "password": "alicepwd123"},
+    ).json()
+    alice_token = alice_login["access_token"]
+
+    # Backdate the heartbeat so the manager treats the session as abandoned.
+    mgr = get_manager(get_settings())
+    assert mgr._session is not None
+    mgr._session.last_polled_at -= SESSION_IDLE_TAKEOVER_SECONDS + 5
+
+    response = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(alice_token)
+    )
+    assert response.status_code == 200, response.text
+    new_session = response.json()
+    assert new_session["id"] != admin_start["id"]
+    assert new_session["status"] in ("pending", "loading")
+
+
+def test_deleting_user_cancels_their_browser_session(
+    client: TestClient, patched_browser: dict[str, Any]
+) -> None:
+    """Regression: deleting a user mid-login must free the shared Chromium.
+
+    Otherwise the orphaned session pins the slot until the 10-minute
+    timeout, blocking every other user from authenticating in the
+    meantime.
+    """
+    from app.config import get_settings
+    from app.services.browser_session import get_manager
+
+    admin_token = bootstrap_login(client)
+
+    create_resp = client.post(
+        "/api/users",
+        json={"username": "bob", "password": "bobpwd123"},
+        headers=auth_header(admin_token),
+    )
+    assert create_resp.status_code == 201
+    bob_id = create_resp.json()["id"]
+
+    bob_token = client.post(
+        "/api/auth/login",
+        json={"username": "bob", "password": "bobpwd123"},
+    ).json()["access_token"]
+
+    # Bob starts an auth session, then admin nukes Bob's account.
+    bob_session = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(bob_token)
+    ).json()
+    mgr = get_manager(get_settings())
+    assert mgr._session is not None
+    assert mgr._session.user_id == bob_id
+    assert mgr._session.is_active
+
+    delete_resp = client.delete(
+        f"/api/users/{bob_id}", headers=auth_header(admin_token)
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+
+    # Manager session is torn down — admin can immediately start a fresh one.
+    assert mgr._session is None or not mgr._session.is_active
+
+    admin_session = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(admin_token)
+    )
+    assert admin_session.status_code == 200, admin_session.text
+    assert admin_session.json()["id"] != bob_session["id"]

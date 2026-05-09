@@ -12,11 +12,13 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
+from app.config import get_settings
 from app.deps import CurrentUser, SessionDep
 from app.models.user import User
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 from app.security import hash_password
 from app.services import parser_files
+from app.services.browser_session import get_manager
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -112,11 +114,15 @@ def update_user(
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: int, session: SessionDep, current_user: CurrentUser) -> None:
+async def delete_user(
+    user_id: int, session: SessionDep, current_user: CurrentUser
+) -> None:
     """Delete a user.
 
     Refuses to delete the currently authenticated user or the last remaining user, to
-    keep the panel reachable.
+    keep the panel reachable. Also tears down any in-flight browser-auth session
+    owned by the deleted user so the shared Chromium isn't held by an orphaned
+    record.
     """
     user = session.get(User, user_id)
     if user is None:
@@ -133,6 +139,11 @@ def delete_user(user_id: int, session: SessionDep, current_user: CurrentUser) ->
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete the last remaining user",
         )
+
+    # Free the shared Chromium *before* dropping the row so an orphaned
+    # browser-auth session doesn't pin the slot for the full timeout.
+    manager = get_manager(get_settings())
+    await manager.cancel_sessions_for_user(user_id)
 
     session.delete(user)
     session.commit()
