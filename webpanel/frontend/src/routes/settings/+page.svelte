@@ -1,9 +1,146 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+
 	import { api, ApiError } from '$lib/api';
+	import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+	import JsonEditor from '$lib/components/JsonEditor.svelte';
 
 	type Tab = 'config' | 'prompts' | 'channels' | 'google';
+	const TABS: Array<{ id: Tab; label: string; description: string }> = [
+		{ id: 'config', label: 'Config', description: 'config.json' },
+		{ id: 'prompts', label: 'Prompts', description: 'config/prompts.json' },
+		{ id: 'channels', label: 'Каналы', description: 'channels.txt' },
+		{ id: 'google', label: 'Google', description: 'Drive / NotebookLM' }
+	];
+	const TAB_IDS = TABS.map((t) => t.id);
+
+	function tabFromHash(): Tab {
+		if (typeof window === 'undefined') return 'config';
+		const raw = window.location.hash.replace(/^#/, '');
+		return (TAB_IDS as string[]).includes(raw) ? (raw as Tab) : 'config';
+	}
+
 	let activeTab = $state<Tab>('config');
 
+	function setActiveTab(next: Tab): void {
+		activeTab = next;
+		if (typeof window !== 'undefined' && window.location.hash !== `#${next}`) {
+			// Use ``replaceState`` so the back button doesn't trap users
+			// in a chain of tab clicks they never intended to revisit.
+			window.history.replaceState(null, '', `#${next}`);
+		}
+	}
+
+	onMount(() => {
+		setActiveTab(tabFromHash());
+		const onHashChange = () => setActiveTab(tabFromHash());
+		window.addEventListener('hashchange', onHashChange);
+		return () => window.removeEventListener('hashchange', onHashChange);
+	});
+
+	// --- Channels --------------------------------------------------------
+	let channels = $state<string[]>([]);
+	let channelsLoaded = $state(false);
+	let channelsError = $state<string | null>(null);
+	let newChannelUrl = $state('');
+	let channelFilter = $state('');
+
+	// Bulk-edit text and a "dirty" flag so that adding / removing a single
+	// channel via the row form doesn't silently clobber unsaved bulk-edit
+	// drafts. We only sync ``bulkChannelsText`` from ``channels`` while
+	// the buffer is clean (or hasn't been touched yet).
+	let bulkChannelsText = $state('');
+	let bulkDirty = $state(false);
+	let bulkSaving = $state(false);
+
+	function syncBulkText(next: string[]): void {
+		if (!bulkDirty) {
+			bulkChannelsText = next.join('\n');
+		}
+	}
+
+	function onBulkInput(): void {
+		bulkDirty = bulkChannelsText !== channels.join('\n');
+	}
+
+	let filteredChannels = $derived.by(() => {
+		const q = channelFilter.trim().toLowerCase();
+		if (!q) return channels.map((url, idx) => ({ url, idx }));
+		return channels
+			.map((url, idx) => ({ url, idx }))
+			.filter(({ url }) => url.toLowerCase().includes(q));
+	});
+
+	async function loadChannels(): Promise<void> {
+		try {
+			channels = await api<string[]>('/api/parser/channels');
+			syncBulkText(channels);
+			channelsError = null;
+		} catch (error) {
+			channelsError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			channelsLoaded = true;
+		}
+	}
+
+	async function addChannel(event: SubmitEvent): Promise<void> {
+		event.preventDefault();
+		const url = newChannelUrl.trim();
+		if (!url) return;
+		try {
+			channels = await api<string[]>('/api/parser/channels', {
+				method: 'POST',
+				body: { url }
+			});
+			syncBulkText(channels);
+			newChannelUrl = '';
+			channelsError = null;
+		} catch (error) {
+			channelsError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function removeChannel(url: string): Promise<void> {
+		try {
+			channels = await api<string[]>(
+				`/api/parser/channels?url=${encodeURIComponent(url)}`,
+				{ method: 'DELETE' }
+			);
+			syncBulkText(channels);
+			channelsError = null;
+		} catch (error) {
+			channelsError = error instanceof ApiError ? error.message : String(error);
+		}
+	}
+
+	async function replaceChannels(): Promise<void> {
+		if (bulkSaving) return;
+		bulkSaving = true;
+		channelsError = null;
+		const list = bulkChannelsText
+			.split('\n')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0 && !s.startsWith('#'));
+		try {
+			channels = await api<string[]>('/api/parser/channels', {
+				method: 'PUT',
+				body: { channels: list }
+			});
+			bulkChannelsText = channels.join('\n');
+			bulkDirty = false;
+		} catch (error) {
+			channelsError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			bulkSaving = false;
+		}
+	}
+
+	function discardBulkEdits(): void {
+		bulkChannelsText = channels.join('\n');
+		bulkDirty = false;
+	}
+
+	// --- Google + NotebookLM --------------------------------------------
 	type GoogleStatus = {
 		has_credentials: boolean;
 		credentials_email: string | null;
@@ -35,181 +172,107 @@
 	let nlmSession = $state<BrowserSession | null>(null);
 	let nlmAuthError = $state<string | null>(null);
 	let nlmAuthBusy = $state(false);
-	let nlmPollHandle: ReturnType<typeof setInterval> | null = null;
 
-	let configText = $state('');
-	let configLoaded = $state(false);
-	let configError = $state<string | null>(null);
-	let configSaving = $state(false);
-	let configSavedAt = $state<string | null>(null);
+	// noVNC poller — implemented as a self-rescheduling setTimeout with
+	// an explicit in-flight guard so a slow request can't cause overlapping
+	// fetches (the previous setInterval(2s) version did exactly that). On
+	// transient errors we apply exponential backoff up to 30s instead of
+	// stopping the poller altogether — the SPA doesn't need to be
+	// restarted just because the proxy hiccuped once.
+	const POLL_BASE_MS = 2000;
+	const POLL_MAX_MS = 30000;
+	let pollHandle: ReturnType<typeof setTimeout> | null = null;
+	let pollInFlight = false;
+	let pollBackoffMs = POLL_BASE_MS;
 
-	let promptsText = $state('');
-	let promptsLoaded = $state(false);
-	let promptsError = $state<string | null>(null);
-	let promptsSaving = $state(false);
-	let promptsSavedAt = $state<string | null>(null);
+	function schedulePoll(delay: number): void {
+		clearPollTimer();
+		pollHandle = setTimeout(() => {
+			pollHandle = null;
+			void pollNotebookLM();
+		}, delay);
+	}
 
-	let channels = $state<string[]>([]);
-	let channelsLoaded = $state(false);
-	let channelsError = $state<string | null>(null);
-	let newChannelUrl = $state('');
-	let bulkChannelsText = $state('');
-	let bulkSaving = $state(false);
-
-	async function loadConfig(): Promise<void> {
-		try {
-			const cfg = await api<Record<string, unknown>>('/api/parser/config');
-			configText = JSON.stringify(cfg, null, 2);
-			configError = null;
-		} catch (error) {
-			configError = error instanceof ApiError ? error.message : String(error);
-		} finally {
-			configLoaded = true;
+	function clearPollTimer(): void {
+		if (pollHandle !== null) {
+			clearTimeout(pollHandle);
+			pollHandle = null;
 		}
 	}
 
-	async function saveConfig(): Promise<void> {
-		if (configSaving) return;
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(configText);
-		} catch (error) {
-			configError = `Невалидный JSON: ${(error as Error).message}`;
+	function stopPolling(): void {
+		clearPollTimer();
+		pollInFlight = false;
+		pollBackoffMs = POLL_BASE_MS;
+	}
+
+	function shouldPoll(): boolean {
+		if (!nlmSession) return false;
+		if (!['pending', 'loading', 'ready'].includes(nlmSession.status)) return false;
+		if (activeTab !== 'google') return false;
+		if (typeof document !== 'undefined' && document.hidden) return false;
+		return true;
+	}
+
+	async function pollNotebookLM(): Promise<void> {
+		if (pollInFlight) return;
+		if (!shouldPoll()) {
+			stopPolling();
 			return;
 		}
-		configSaving = true;
-		configError = null;
-		try {
-			const updated = await api<Record<string, unknown>>('/api/parser/config', {
-				method: 'PUT',
-				body: { config: parsed }
-			});
-			configText = JSON.stringify(updated, null, 2);
-			configSavedAt = new Date().toLocaleTimeString('ru-RU');
-		} catch (error) {
-			configError = error instanceof ApiError ? error.message : String(error);
-		} finally {
-			configSaving = false;
-		}
-	}
-
-	function formatConfigJson(): void {
-		try {
-			configText = JSON.stringify(JSON.parse(configText), null, 2);
-			configError = null;
-		} catch (error) {
-			configError = `Невалидный JSON: ${(error as Error).message}`;
-		}
-	}
-
-	async function loadPrompts(): Promise<void> {
-		try {
-			const data = await api<Record<string, unknown>>('/api/parser/prompts');
-			promptsText = JSON.stringify(data, null, 2);
-			promptsError = null;
-		} catch (error) {
-			promptsError = error instanceof ApiError ? error.message : String(error);
-		} finally {
-			promptsLoaded = true;
-		}
-	}
-
-	async function savePrompts(): Promise<void> {
-		if (promptsSaving) return;
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(promptsText);
-		} catch (error) {
-			promptsError = `Невалидный JSON: ${(error as Error).message}`;
+		const sessionId = nlmSession?.id;
+		if (!sessionId) {
+			stopPolling();
 			return;
 		}
-		promptsSaving = true;
-		promptsError = null;
+		pollInFlight = true;
 		try {
-			const updated = await api<Record<string, unknown>>('/api/parser/prompts', {
-				method: 'PUT',
-				body: { prompts: parsed }
-			});
-			promptsText = JSON.stringify(updated, null, 2);
-			promptsSavedAt = new Date().toLocaleTimeString('ru-RU');
+			nlmSession = await api<BrowserSession>(`/api/google/notebooklm/auth/${sessionId}`);
+			pollBackoffMs = POLL_BASE_MS;
+			if (!shouldPoll()) {
+				stopPolling();
+				return;
+			}
+			schedulePoll(POLL_BASE_MS);
 		} catch (error) {
-			promptsError = error instanceof ApiError ? error.message : String(error);
+			// Don't kill the poller on transient errors — the user almost
+			// certainly wants the iframe to keep updating once the
+			// connection recovers. Surface the message but keep retrying
+			// with exponential backoff capped at POLL_MAX_MS.
+			nlmAuthError = error instanceof ApiError ? error.message : String(error);
+			pollBackoffMs = Math.min(pollBackoffMs * 2, POLL_MAX_MS);
+			schedulePoll(pollBackoffMs);
 		} finally {
-			promptsSaving = false;
+			pollInFlight = false;
 		}
 	}
 
-	function formatPromptsJson(): void {
-		try {
-			promptsText = JSON.stringify(JSON.parse(promptsText), null, 2);
-			promptsError = null;
-		} catch (error) {
-			promptsError = `Невалидный JSON: ${(error as Error).message}`;
+	function ensurePolling(): void {
+		if (!shouldPoll()) {
+			stopPolling();
+			return;
+		}
+		if (pollHandle === null && !pollInFlight) {
+			schedulePoll(POLL_BASE_MS);
 		}
 	}
 
-	async function loadChannels(): Promise<void> {
-		try {
-			channels = await api<string[]>('/api/parser/channels');
-			bulkChannelsText = channels.join('\n');
-			channelsError = null;
-		} catch (error) {
-			channelsError = error instanceof ApiError ? error.message : String(error);
-		} finally {
-			channelsLoaded = true;
-		}
-	}
+	$effect(() => {
+		// Re-evaluate polling whenever the inputs to ``shouldPoll()``
+		// change. Reading them here registers them as dependencies.
+		void activeTab;
+		void nlmSession?.status;
+		ensurePolling();
+	});
 
-	async function addChannel(event: SubmitEvent): Promise<void> {
-		event.preventDefault();
-		const url = newChannelUrl.trim();
-		if (!url) return;
-		try {
-			channels = await api<string[]>('/api/parser/channels', {
-				method: 'POST',
-				body: { url }
-			});
-			bulkChannelsText = channels.join('\n');
-			newChannelUrl = '';
-			channelsError = null;
-		} catch (error) {
-			channelsError = error instanceof ApiError ? error.message : String(error);
-		}
-	}
-
-	async function removeChannel(url: string): Promise<void> {
-		try {
-			channels = await api<string[]>(
-				`/api/parser/channels?url=${encodeURIComponent(url)}`,
-				{ method: 'DELETE' }
-			);
-			bulkChannelsText = channels.join('\n');
-			channelsError = null;
-		} catch (error) {
-			channelsError = error instanceof ApiError ? error.message : String(error);
-		}
-	}
-
-	async function replaceChannels(): Promise<void> {
-		if (bulkSaving) return;
-		bulkSaving = true;
-		channelsError = null;
-		const list = bulkChannelsText
-			.split('\n')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0 && !s.startsWith('#'));
-		try {
-			channels = await api<string[]>('/api/parser/channels', {
-				method: 'PUT',
-				body: { channels: list }
-			});
-			bulkChannelsText = channels.join('\n');
-		} catch (error) {
-			channelsError = error instanceof ApiError ? error.message : String(error);
-		} finally {
-			bulkSaving = false;
-		}
-	}
+	onMount(() => {
+		const onVisibility = () => ensurePolling();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			document.removeEventListener('visibilitychange', onVisibility);
+			stopPolling();
+		};
+	});
 
 	async function loadGoogleStatus(): Promise<void> {
 		try {
@@ -311,36 +374,12 @@
 			nlmSession = await api<BrowserSession>('/api/google/notebooklm/auth/start', {
 				method: 'POST'
 			});
-			startNotebookLMPolling();
+			pollBackoffMs = POLL_BASE_MS;
+			ensurePolling();
 		} catch (error) {
 			nlmAuthError = error instanceof ApiError ? error.message : String(error);
 		} finally {
 			nlmAuthBusy = false;
-		}
-	}
-
-	function startNotebookLMPolling(): void {
-		stopNotebookLMPolling();
-		nlmPollHandle = setInterval(async () => {
-			if (!nlmSession) return stopNotebookLMPolling();
-			try {
-				nlmSession = await api<BrowserSession>(
-					`/api/google/notebooklm/auth/${nlmSession.id}`
-				);
-			} catch (error) {
-				nlmAuthError = error instanceof ApiError ? error.message : String(error);
-				stopNotebookLMPolling();
-			}
-			if (nlmSession && !['pending', 'loading', 'ready'].includes(nlmSession.status)) {
-				stopNotebookLMPolling();
-			}
-		}, 2000);
-	}
-
-	function stopNotebookLMPolling(): void {
-		if (nlmPollHandle !== null) {
-			clearInterval(nlmPollHandle);
-			nlmPollHandle = null;
 		}
 	}
 
@@ -353,8 +392,7 @@
 				`/api/google/notebooklm/auth/${nlmSession.id}/save`,
 				{ method: 'POST' }
 			);
-			stopNotebookLMPolling();
-			// Refresh status flag.
+			stopPolling();
 			googleStatus = await api<GoogleStatus>('/api/google/status');
 		} catch (error) {
 			nlmAuthError = error instanceof ApiError ? error.message : String(error);
@@ -372,12 +410,22 @@
 				`/api/google/notebooklm/auth/${nlmSession.id}/cancel`,
 				{ method: 'POST' }
 			);
-			stopNotebookLMPolling();
+			stopPolling();
 		} catch (error) {
 			nlmAuthError = error instanceof ApiError ? error.message : String(error);
 		} finally {
 			nlmAuthBusy = false;
 		}
+	}
+
+	let googleTestTimer: ReturnType<typeof setTimeout> | null = null;
+	function scheduleGoogleTestClear(): void {
+		if (googleTestTimer !== null) clearTimeout(googleTestTimer);
+		googleTestTimer = setTimeout(() => {
+			googleTestResult = null;
+			googleTestError = null;
+			googleTestTimer = null;
+		}, 4000);
 	}
 
 	async function testGoogle(): Promise<void> {
@@ -388,49 +436,26 @@
 			googleTestResult = res.detail;
 		} catch (error) {
 			googleTestError = error instanceof ApiError ? error.message : String(error);
+		} finally {
+			scheduleGoogleTestClear();
 		}
 	}
 
 	$effect(() => {
-		if (activeTab === 'config' && !configLoaded) loadConfig();
-		if (activeTab === 'prompts' && !promptsLoaded) loadPrompts();
 		if (activeTab === 'channels' && !channelsLoaded) loadChannels();
 		if (activeTab === 'google' && !googleLoaded) loadGoogleStatus();
 	});
 
-	// Stop the NotebookLM browser-auth poller when the component is
-	// destroyed so it doesn't keep firing API calls after navigation.
-	$effect(() => () => stopNotebookLMPolling());
-
-	const tabs: Array<{ id: Tab; label: string; description: string }> = [
-		{
-			id: 'config',
-			label: 'Config',
-			description: 'config.json'
-		},
-		{
-			id: 'prompts',
-			label: 'Prompts',
-			description: 'config/prompts.json'
-		},
-		{
-			id: 'channels',
-			label: 'Каналы',
-			description: 'channels.txt'
-		},
-		{
-			id: 'google',
-			label: 'Google',
-			description: 'Drive / NotebookLM'
+	$effect(() => () => {
+		if (googleTestTimer !== null) {
+			clearTimeout(googleTestTimer);
+			googleTestTimer = null;
 		}
-	];
+	});
 </script>
 
 <div class="space-y-6">
-	<header class="flex flex-col gap-1">
-		<p class="text-xs font-medium uppercase tracking-wider text-amber-600 dark:text-amber-400">
-			Парсер
-		</p>
+	<header class="space-y-2">
 		<h1 class="text-2xl font-semibold tracking-tight">Настройки</h1>
 		<p class="max-w-3xl text-sm text-slate-500 dark:text-slate-400">
 			CRUD для <strong>ваших</strong> файлов парсера:
@@ -451,11 +476,20 @@
 		</p>
 	</header>
 
-	<div class="flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800">
-		{#each tabs as tab (tab.id)}
+	<div
+		class="flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800"
+		role="tablist"
+		aria-label="Разделы настроек"
+	>
+		{#each TABS as tab (tab.id)}
 			<button
 				type="button"
-				onclick={() => (activeTab = tab.id)}
+				role="tab"
+				id="tab-{tab.id}"
+				aria-controls="panel-{tab.id}"
+				aria-selected={activeTab === tab.id}
+				tabindex={activeTab === tab.id ? 0 : -1}
+				onclick={() => setActiveTab(tab.id)}
 				class="relative -mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors
 					{activeTab === tab.id
 					? 'border-sky-500 text-sky-700 dark:text-sky-300'
@@ -468,77 +502,23 @@
 	</div>
 
 	{#if activeTab === 'config'}
-		<section class="space-y-3">
-			{#if !configLoaded}
-				<div class="text-sm text-slate-500">Загрузка…</div>
-			{:else}
-				<textarea
-					bind:value={configText}
-					rows="22"
-					spellcheck="false"
-					class="input min-h-[400px] font-mono text-[12px] leading-snug"
-				></textarea>
-				<div class="flex flex-wrap items-center gap-3">
-					<button class="btn-primary" onclick={saveConfig} disabled={configSaving}>
-						{configSaving ? 'Сохраняем…' : 'Сохранить'}
-					</button>
-					<button class="btn-secondary" onclick={formatConfigJson}>Форматировать</button>
-					<button class="btn-secondary" onclick={loadConfig}>Перечитать с диска</button>
-					{#if configSavedAt}
-						<span class="text-xs text-emerald-600">Сохранено в {configSavedAt}</span>
-					{/if}
-				</div>
-				{#if configError}
-					<div class="banner-error">
-						<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-							<path
-								fill-rule="evenodd"
-								d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-						<span>{configError}</span>
-					</div>
-				{/if}
-			{/if}
-		</section>
+		<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
+			<JsonEditor
+				loadEndpoint="/api/parser/config"
+				saveEndpoint="/api/parser/config"
+				bodyKey="config"
+			/>
+		</div>
 	{:else if activeTab === 'prompts'}
-		<section class="space-y-3">
-			{#if !promptsLoaded}
-				<div class="text-sm text-slate-500">Загрузка…</div>
-			{:else}
-				<textarea
-					bind:value={promptsText}
-					rows="22"
-					spellcheck="false"
-					class="input min-h-[400px] font-mono text-[12px] leading-snug"
-				></textarea>
-				<div class="flex flex-wrap items-center gap-3">
-					<button class="btn-primary" onclick={savePrompts} disabled={promptsSaving}>
-						{promptsSaving ? 'Сохраняем…' : 'Сохранить'}
-					</button>
-					<button class="btn-secondary" onclick={formatPromptsJson}>Форматировать</button>
-					<button class="btn-secondary" onclick={loadPrompts}>Перечитать с диска</button>
-					{#if promptsSavedAt}
-						<span class="text-xs text-emerald-600">Сохранено в {promptsSavedAt}</span>
-					{/if}
-				</div>
-				{#if promptsError}
-					<div class="banner-error">
-						<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-							<path
-								fill-rule="evenodd"
-								d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-						<span>{promptsError}</span>
-					</div>
-				{/if}
-			{/if}
-		</section>
+		<div role="tabpanel" id="panel-prompts" aria-labelledby="tab-prompts">
+			<JsonEditor
+				loadEndpoint="/api/parser/prompts"
+				saveEndpoint="/api/parser/prompts"
+				bodyKey="prompts"
+			/>
+		</div>
 	{:else if activeTab === 'channels'}
-		<section class="space-y-5">
+		<div role="tabpanel" id="panel-channels" aria-labelledby="tab-channels" class="space-y-5">
 			{#if !channelsLoaded}
 				<div class="text-sm text-slate-500">Загрузка…</div>
 			{:else}
@@ -554,6 +534,22 @@
 					</label>
 					<button type="submit" class="btn-primary">Добавить</button>
 				</form>
+
+				<div class="flex flex-wrap items-center gap-3">
+					<label class="flex flex-1 items-center gap-2 text-sm">
+						<span class="text-slate-500">Поиск:</span>
+						<input
+							type="search"
+							bind:value={channelFilter}
+							placeholder="фильтр по ссылке"
+							class="input font-mono text-[12px]"
+							aria-label="Поиск по списку каналов"
+						/>
+					</label>
+					<span class="text-xs text-slate-400">
+						{filteredChannels.length} из {channels.length}
+					</span>
+				</div>
 
 				<div class="table-wrap overflow-x-auto">
 					<table class="table-base">
@@ -576,15 +572,26 @@
 										</div>
 									</td>
 								</tr>
+							{:else if filteredChannels.length === 0}
+								<tr>
+									<td colspan="3" class="text-slate-500">
+										<div class="flex flex-col items-center gap-1 py-6 text-center">
+											<p class="text-sm">Ничего не найдено</p>
+											<p class="text-xs text-slate-400">
+												Очистите поле поиска, чтобы увидеть все каналы
+											</p>
+										</div>
+									</td>
+								</tr>
 							{/if}
-							{#each channels as channel, idx (channel)}
+							{#each filteredChannels as { url, idx } (url)}
 								<tr>
 									<td class="font-mono text-xs text-slate-500">{idx + 1}</td>
-									<td class="font-mono text-xs">{channel}</td>
+									<td class="font-mono text-xs">{url}</td>
 									<td class="text-right">
 										<button
 											class="btn-danger btn-sm"
-											onclick={() => removeChannel(channel)}
+											onclick={() => removeChannel(url)}
 										>
 											Удалить
 										</button>
@@ -598,6 +605,11 @@
 				<details class="card p-4">
 					<summary class="cursor-pointer text-sm font-medium text-slate-700 dark:text-slate-300">
 						Массовая правка списка
+						{#if bulkDirty}
+							<span class="ml-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+								● несохранённые изменения
+							</span>
+						{/if}
 					</summary>
 					<div class="mt-3 space-y-3">
 						<p class="text-xs text-slate-500">
@@ -609,35 +621,32 @@
 						</p>
 						<textarea
 							bind:value={bulkChannelsText}
+							oninput={onBulkInput}
 							rows="10"
 							spellcheck="false"
 							class="input min-h-[200px] font-mono text-[12px] leading-snug"
 						></textarea>
-						<div class="flex items-center gap-3">
+						<div class="flex flex-wrap items-center gap-3">
 							<button class="btn-primary" onclick={replaceChannels} disabled={bulkSaving}>
 								{bulkSaving ? 'Сохраняем…' : 'Заменить весь список'}
 							</button>
-							<button class="btn-secondary" onclick={loadChannels}>Сбросить</button>
+							<button
+								class="btn-secondary"
+								onclick={discardBulkEdits}
+								disabled={!bulkDirty}
+							>
+								Отменить правки
+							</button>
+							<button class="btn-secondary" onclick={loadChannels}>Перечитать с диска</button>
 						</div>
 					</div>
 				</details>
 
-				{#if channelsError}
-					<div class="banner-error">
-						<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-							<path
-								fill-rule="evenodd"
-								d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-						<span>{channelsError}</span>
-					</div>
-				{/if}
+				<ErrorBanner message={channelsError} />
 			{/if}
-		</section>
+		</div>
 	{:else if activeTab === 'google'}
-		<section class="space-y-6">
+		<div role="tabpanel" id="panel-google" aria-labelledby="tab-google" class="space-y-6">
 			{#if !googleLoaded}
 				<div class="text-sm text-slate-500">Загрузка…</div>
 			{:else if googleStatus}
@@ -811,9 +820,7 @@
 							<div class="mt-3 space-y-3">
 								<div class="flex flex-wrap items-center gap-2">
 									<span
-										class="pill-{nlmSession.status === 'ready'
-											? 'green'
-											: 'amber'}"
+										class="pill-{nlmSession.status === 'ready' ? 'green' : 'amber'}"
 									>
 										{#if nlmSession.status === 'loading'}
 											Открываем браузер…
@@ -853,18 +860,7 @@
 				</div>
 			{/if}
 
-			{#if googleError}
-				<div class="banner-error">
-					<svg class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-						<path
-							fill-rule="evenodd"
-							d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-							clip-rule="evenodd"
-						/>
-					</svg>
-					<span>{googleError}</span>
-				</div>
-			{/if}
-		</section>
+			<ErrorBanner message={googleError} />
+		</div>
 	{/if}
 </div>
