@@ -501,23 +501,41 @@
 		{/each}
 	</div>
 
-	{#if activeTab === 'config'}
-		<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
-			<JsonEditor
-				loadEndpoint="/api/parser/config"
-				saveEndpoint="/api/parser/config"
-				bodyKey="config"
-			/>
-		</div>
-	{:else if activeTab === 'prompts'}
-		<div role="tabpanel" id="panel-prompts" aria-labelledby="tab-prompts">
-			<JsonEditor
-				loadEndpoint="/api/parser/prompts"
-				saveEndpoint="/api/parser/prompts"
-				bodyKey="prompts"
-			/>
-		</div>
-	{:else if activeTab === 'channels'}
+	<!--
+		The JsonEditor tabpanels are always mounted (toggled with the
+		``hidden`` attribute) instead of guarded by ``{#if}``. Svelte
+		destroys components inside ``{#if}`` blocks, so wrapping the
+		editor in a conditional would lose every unsaved buffer the
+		moment the user clicked another tab — exactly the regression
+		Devin Review caught on PR #20. The Channels and Google panels
+		can stay conditional because their state lives at the page
+		level and survives a remount.
+	-->
+	<div
+		role="tabpanel"
+		id="panel-config"
+		aria-labelledby="tab-config"
+		hidden={activeTab !== 'config'}
+	>
+		<JsonEditor
+			loadEndpoint="/api/parser/config"
+			saveEndpoint="/api/parser/config"
+			bodyKey="config"
+		/>
+	</div>
+	<div
+		role="tabpanel"
+		id="panel-prompts"
+		aria-labelledby="tab-prompts"
+		hidden={activeTab !== 'prompts'}
+	>
+		<JsonEditor
+			loadEndpoint="/api/parser/prompts"
+			saveEndpoint="/api/parser/prompts"
+			bodyKey="prompts"
+		/>
+	</div>
+	{#if activeTab === 'channels'}
 		<div role="tabpanel" id="panel-channels" aria-labelledby="tab-channels" class="space-y-5">
 			{#if !channelsLoaded}
 				<div class="text-sm text-slate-500">Загрузка…</div>
