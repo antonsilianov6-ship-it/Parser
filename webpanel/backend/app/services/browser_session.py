@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 # login including 2FA.
 SESSION_TIMEOUT_SECONDS = 10 * 60
 
+# If a session has not been polled / interacted with for this many
+# seconds we consider it abandoned (the user closed the tab, lost
+# their network, etc.) and let *another* user take over the slot
+# without waiting for the full ``SESSION_TIMEOUT_SECONDS`` budget.
+# The SPA polls every 2 seconds, so 30 seconds is comfortably above
+# any normal poll cadence yet keeps the unblocking latency for a
+# second user low.
+SESSION_IDLE_TAKEOVER_SECONDS = 30
+
 SessionStatus = Literal["pending", "loading", "ready", "completed", "cancelled", "error"]
 
 
@@ -55,6 +64,7 @@ class BrowserSession:
     status: SessionStatus = "pending"
     error: str | None = None
     started_at: float = field(default_factory=time.time)
+    last_polled_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     # Playwright handles. Kept private so callers don't have to deal
     # with the async lifecycle directly.
@@ -70,6 +80,21 @@ class BrowserSession:
     @property
     def expired(self) -> bool:
         return time.time() - self.started_at > SESSION_TIMEOUT_SECONDS
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.time() - self.last_polled_at
+
+    @property
+    def can_be_taken_over(self) -> bool:
+        """True when another user is allowed to preempt this session.
+
+        Either the session has gone past its hard timeout (no progress
+        in 10 minutes) or it has been silent for more than
+        ``SESSION_IDLE_TAKEOVER_SECONDS`` (the SPA stopped polling —
+        usually because the tab was closed or the user navigated away).
+        """
+        return self.expired or self.idle_seconds > SESSION_IDLE_TAKEOVER_SECONDS
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -115,15 +140,28 @@ class BrowserSessionManager:
         """
         async with self._lock:
             existing = self._session
-            if existing is not None and existing.is_active and not existing.expired:
-                if existing.user_id != user_id:
+            if existing is not None and existing.is_active:
+                if existing.user_id == user_id:
+                    # Same user — return the existing one so the SPA can resume.
+                    existing.last_polled_at = time.time()
+                    return existing
+                if not existing.can_be_taken_over:
                     raise RuntimeError(
                         "browser_busy: another user has an active session"
                     )
-                # Same user — return the existing one so the SPA can resume.
-                return existing
-            if existing is not None:
-                # Cleanup stale session before starting a new one.
+                # Other user's session is stale (expired or no recent
+                # poll) — reclaim the slot so a fresh user isn't held
+                # hostage by an abandoned tab.
+                logger.info(
+                    "Preempting idle browser session %s (user_id=%s, idle=%.1fs)",
+                    existing.id,
+                    existing.user_id,
+                    existing.idle_seconds,
+                )
+                existing.error = "preempted"
+                await self._teardown(existing, mark_status="cancelled")
+            elif existing is not None:
+                # Already-finalised session — clear it before starting a new one.
                 await self._teardown(existing, mark_status="cancelled")
 
             session = BrowserSession(
@@ -150,6 +188,9 @@ class BrowserSessionManager:
         session = self._session
         if session is None or session.id != session_id:
             return None
+        # Bump the heartbeat *before* any teardown so a single missed
+        # poll doesn't immediately race the takeover threshold.
+        session.last_polled_at = time.time()
         if session.is_active and session.expired:
             await self._teardown(session, mark_status="cancelled")
             session.error = "timeout"
@@ -198,6 +239,28 @@ class BrowserSessionManager:
         session = self._session
         if session is None or session.id != session_id:
             return False
+        await self._teardown(session, mark_status="cancelled")
+        return True
+
+    async def cancel_sessions_for_user(self, user_id: int) -> bool:
+        """Cancel any active session owned by ``user_id``.
+
+        Called from the user-delete endpoint so deleting an admin
+        mid-login doesn't leave their orphaned session pinning the
+        shared Chromium for the full ``SESSION_TIMEOUT_SECONDS``
+        window.
+        """
+        session = self._session
+        if session is None or session.user_id != user_id:
+            return False
+        if not session.is_active:
+            return False
+        logger.info(
+            "Cancelling browser session %s because user %s was deleted",
+            session.id,
+            user_id,
+        )
+        session.error = "user_deleted"
         await self._teardown(session, mark_status="cancelled")
         return True
 

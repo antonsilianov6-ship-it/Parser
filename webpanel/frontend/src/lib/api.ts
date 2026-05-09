@@ -56,11 +56,15 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 	}
 
 	if (!response.ok) {
-		let detail: unknown = undefined;
+		// Read the body exactly once: a failed `response.json()` already
+		// drains the body, so a follow-up `response.text()` raises
+		// "Failed to execute 'text' on 'Response': body stream already read".
+		const raw = await response.text();
+		let detail: unknown = raw;
 		try {
-			detail = await response.json();
+			detail = JSON.parse(raw);
 		} catch {
-			detail = await response.text();
+			// Not JSON (e.g. an upstream proxy's HTML 502 page) — keep the raw text.
 		}
 		throw new ApiError(response.status, detail);
 	}
