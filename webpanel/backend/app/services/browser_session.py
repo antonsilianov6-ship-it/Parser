@@ -141,24 +141,31 @@ class BrowserSessionManager:
         async with self._lock:
             existing = self._session
             if existing is not None and existing.is_active:
-                if existing.user_id == user_id:
+                if existing.user_id == user_id and not existing.expired:
                     # Same user — return the existing one so the SPA can resume.
                     existing.last_polled_at = time.time()
                     return existing
-                if not existing.can_be_taken_over:
+                if existing.user_id != user_id and not existing.can_be_taken_over:
                     raise RuntimeError(
                         "browser_busy: another user has an active session"
                     )
-                # Other user's session is stale (expired or no recent
-                # poll) — reclaim the slot so a fresh user isn't held
-                # hostage by an abandoned tab.
+                # Either same user with an expired session, or a different
+                # user whose session has gone idle. Tear it down so we
+                # start fresh — without this an expired same-user session
+                # would be returned, then immediately killed by the next
+                # poll with a confusing "timeout" error.
                 logger.info(
-                    "Preempting idle browser session %s (user_id=%s, idle=%.1fs)",
+                    "Replacing stale browser session %s "
+                    "(owner_user_id=%s, requester_user_id=%s, expired=%s, idle=%.1fs)",
                     existing.id,
                     existing.user_id,
+                    user_id,
+                    existing.expired,
                     existing.idle_seconds,
                 )
-                existing.error = "preempted"
+                existing.error = (
+                    "expired" if existing.user_id == user_id else "preempted"
+                )
                 await self._teardown(existing, mark_status="cancelled")
             elif existing is not None:
                 # Already-finalised session — clear it before starting a new one.
