@@ -318,6 +318,43 @@ def test_other_user_can_take_over_idle_session(
     assert new_session["status"] in ("pending", "loading")
 
 
+def test_same_user_expired_session_gets_replaced_not_returned(
+    client: TestClient, patched_browser: dict[str, Any]
+) -> None:
+    """Regression: a same-user expired session must not be reused.
+
+    The previous start_session refactor returned any existing
+    same-user session as long as it was ``is_active`` — even if it
+    had already crossed ``SESSION_TIMEOUT_SECONDS``. The next poll
+    would then immediately tear it down with ``error='timeout'``,
+    confusing the user. A fresh ``start_session`` call from the same
+    user must always replace an expired session with a new one.
+    """
+    from app.config import get_settings
+    from app.services.browser_session import (
+        SESSION_TIMEOUT_SECONDS,
+        get_manager,
+    )
+
+    token = bootstrap_login(client)
+    first = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(token)
+    ).json()
+
+    mgr = get_manager(get_settings())
+    assert mgr._session is not None
+    # Backdate ``started_at`` past the hard timeout so the session is "expired".
+    mgr._session.started_at -= SESSION_TIMEOUT_SECONDS + 5
+
+    response = client.post(
+        "/api/google/notebooklm/auth/start", headers=auth_header(token)
+    )
+    assert response.status_code == 200, response.text
+    second = response.json()
+    assert second["id"] != first["id"]
+    assert second["status"] in ("pending", "loading")
+
+
 def test_deleting_user_cancels_their_browser_session(
     client: TestClient, patched_browser: dict[str, Any]
 ) -> None:
