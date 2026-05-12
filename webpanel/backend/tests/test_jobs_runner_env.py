@@ -5,6 +5,8 @@ subprocess, and only when the corresponding job flag was set.
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from app.models.job import Job, JobMode, JobStatus
@@ -84,6 +86,10 @@ def test_build_env_injects_docs_paths(client: TestClient) -> None:
 
 def test_build_env_injects_notebooklm_only(client: TestClient) -> None:
     bootstrap_login(client)
+    # ``_build_env`` reads storage file content into NOTEBOOKLM_AUTH_JSON because
+    # ``notebooklm-py`` expects inline JSON in that env var, not a file path.
+    storage_payload = '{"cookies": [{"name": "SID", "value": "x"}], "origins": []}'
+    parser_files.write_notebooklm_storage(1, storage_payload)
     env = jobs_runner._build_env(
         _make_account(),
         owner_user_id=1,
@@ -93,7 +99,27 @@ def test_build_env_injects_notebooklm_only(client: TestClient) -> None:
     assert env["PARSER_EXPORT_TO_DOCS"] == "0"
     assert env["PARSER_EXPORT_TO_NOTEBOOKLM"] == "1"
     assert "GOOGLE_CREDS_PATH" not in env
-    assert env["NOTEBOOKLM_AUTH_JSON"] == str(
-        parser_files.notebooklm_storage_path(1)
-    )
+    # ``write_notebooklm_storage`` may re-indent the JSON it persists, so
+    # compare structurally instead of byte-for-byte.
+    assert json.loads(env["NOTEBOOKLM_AUTH_JSON"]) == json.loads(storage_payload)
     assert env["PARSER_CLEAR_DB_AFTER_EXPORT"] == "1"
+
+
+def test_build_env_raises_when_notebooklm_storage_missing(client: TestClient) -> None:
+    """If the slot is set up but storage file is gone, ``_build_env`` fails loudly."""
+    bootstrap_login(client)
+    storage_path = parser_files.notebooklm_storage_path(1)
+    storage_path.parent.mkdir(parents=True, exist_ok=True)
+    if storage_path.exists():
+        storage_path.unlink()
+    try:
+        jobs_runner._build_env(
+            _make_account(),
+            owner_user_id=1,
+            job=_make_job(docs=False, nlm=True),
+            owner=None,
+        )
+    except RuntimeError as exc:
+        assert "NotebookLM storage file unreadable" in str(exc)
+    else:  # pragma: no cover — fail message
+        raise AssertionError("Expected RuntimeError for missing storage file")
