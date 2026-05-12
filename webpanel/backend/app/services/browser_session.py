@@ -17,14 +17,44 @@ window the user sees over noVNC.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import secrets
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlparse, urlunparse
 
 from app.config import Settings
+
+
+def _resolve_cdp_url(url: str) -> str:
+    """Return ``url`` with its hostname replaced by an IPv4 literal.
+
+    No-op when the host is already an IP or ``localhost``. DNS failures are
+    swallowed (the original URL is returned) so the caller still gets a
+    Playwright-level error message rather than a cryptic ``socket.gaierror``.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host or host == "localhost":
+        return url
+    try:
+        ipaddress.ip_address(host)
+        return url
+    except ValueError:
+        pass
+    try:
+        resolved = socket.gethostbyname(host)
+    except OSError:
+        return url
+    if parsed.port:
+        netloc = f"{resolved}:{parsed.port}"
+    else:
+        netloc = resolved
+    return urlunparse(parsed._replace(netloc=netloc))
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.async_api import Browser, BrowserContext, Page, Playwright
@@ -118,7 +148,17 @@ class BrowserSessionManager:
 
     @property
     def cdp_url(self) -> str:
-        return self._settings.browser_cdp_url
+        """CDP URL with the host portion resolved to an IP.
+
+        Chromium 128+ rejects DevTools connections whose ``Host`` header is
+        not an IP literal or ``localhost``. When the panel reaches the
+        browser by its docker service name (e.g. ``http://browser:9222``),
+        Playwright forwards that hostname unchanged in the Host header and
+        Chromium responds with *"Host header is specified and is not an IP
+        address or localhost."*. Resolving the host to its current IP before
+        we hand the URL to Playwright sidesteps the check.
+        """
+        return _resolve_cdp_url(self._settings.browser_cdp_url)
 
     @property
     def public_url(self) -> str:
@@ -291,22 +331,42 @@ class BrowserSessionManager:
         # any failure to avoid leaking the WebSocket / browser process.
         try:
             # ``connect_over_cdp`` yields the existing Chromium instance.
-            # Close leftover contexts so the visible window is always the
-            # brand-new login tab.
-            for ctx in list(browser.contexts):
-                try:
-                    await ctx.close()
-                except Exception:  # noqa: BLE001 — best-effort cleanup
-                    pass
-
-            context = await browser.new_context()
-            page = await context.new_page()
+            # When Chromium is launched with ``--user-data-dir`` it exposes a
+            # single persistent browser context that *cannot* be removed —
+            # calling ``ctx.close()`` on the last context kills the browser
+            # process itself (Chromium exits when its final window closes),
+            # after which any ``browser.new_context()`` blows up with
+            # ``TargetClosedError``. We instead reuse that default context
+            # and merely close any leftover pages so the noVNC viewport
+            # shows the new login tab and nothing else.
+            contexts = list(browser.contexts)
+            if not contexts:
+                context = await browser.new_context()
+                page = await context.new_page()
+            else:
+                # Reuse the persistent default context and its existing
+                # about:blank page (Chromium boots with one). Calling
+                # ``new_page`` on this CDP-attached context fails with
+                # ``TargetClosedError`` even when the context is alive,
+                # so we navigate the existing page instead.
+                context = contexts[0]
+                pages = list(context.pages)
+                if pages:
+                    page = pages[0]
+                    for extra in pages[1:]:
+                        try:
+                            await extra.close()
+                        except Exception:  # noqa: BLE001 — best-effort
+                            pass
+                else:
+                    page = await context.new_page()
             await page.goto(session.target_url, wait_until="domcontentloaded")
         except Exception:
+            # Don't close ``context`` or ``browser`` here either — same
+            # persistent-context caveat as in ``_teardown``. Closing them
+            # tears down Chromium and breaks subsequent auth attempts.
             for handle, closer in (
                 (locals().get("page"), lambda h: h.close()),
-                (locals().get("context"), lambda h: h.close()),
-                (browser, lambda h: h.close()),
                 (playwright, lambda h: h.stop()),
             ):
                 if handle is None:
@@ -332,18 +392,25 @@ class BrowserSessionManager:
         *,
         mark_status: SessionStatus,
     ) -> None:
-        for handle, closer in (
-            (session._page, lambda h: h.close()),
-            (session._context, lambda h: h.close()),
-            (session._browser, lambda h: h.close()),
-            (session._playwright, lambda h: h.stop()),
-        ):
-            if handle is None:
-                continue
+        # We deliberately do **not** close the page, the persistent
+        # context, or the browser here:
+        #   * Closing the page would leave the persistent context with
+        #     zero pages — Chromium then exits and the container needs a
+        #     restart before the next auth attempt.
+        #   * The context is the persistent default one (``user-data-dir``),
+        #     and closing it has the same effect.
+        # We park the page on about:blank to clear any visible UI, then
+        # just drop the CDP socket via ``playwright.stop()``.
+        if session._page is not None:
             try:
-                await closer(handle)
+                await session._page.goto("about:blank", wait_until="domcontentloaded")
             except Exception:  # noqa: BLE001 — best-effort
-                logger.debug("Error tearing down browser session %s", session.id, exc_info=True)
+                logger.debug("Error parking page on teardown for %s", session.id, exc_info=True)
+        if session._playwright is not None:
+            try:
+                await session._playwright.stop()
+            except Exception:  # noqa: BLE001 — best-effort
+                logger.debug("Error stopping playwright for %s", session.id, exc_info=True)
         session._page = None
         session._context = None
         session._browser = None
