@@ -114,9 +114,17 @@ def _build_env(
             env["GOOGLE_DRIVE_FOLDER_ID"] = owner.google_drive_folder_id
 
     if job.export_to_notebooklm:
-        env["NOTEBOOKLM_AUTH_JSON"] = str(
-            parser_files.notebooklm_storage_path(owner_user_id)
-        )
+        # ``notebooklm-py`` (v0.3.4+) reads ``NOTEBOOKLM_AUTH_JSON`` as *inline*
+        # Playwright storage-state JSON, not as a file path. We keep the file
+        # on disk (per-user) and inject its content here so the library can
+        # parse it directly without us spelunking into ``from_storage(path=…)``.
+        storage_path = parser_files.notebooklm_storage_path(owner_user_id)
+        try:
+            env["NOTEBOOKLM_AUTH_JSON"] = storage_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                f"NotebookLM storage file unreadable for user {owner_user_id}: {exc}"
+            ) from exc
 
     # When either export is requested, ask the parser to wipe ``messages``
     # after a successful export — entity / processed-link cache stays so

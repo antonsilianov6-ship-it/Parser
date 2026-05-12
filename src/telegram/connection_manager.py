@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from telethon import TelegramClient as TelethonClient
 from python_socks import ProxyType
-from src.config import get_telegram_config
+from src.config import SESSION_PATH, get_telegram_config
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -33,13 +33,13 @@ class ConnectionManager:
         self.api_id = telegram_config['API_ID']
         self.api_hash = telegram_config['API_HASH']
         
-        # Путь к сессии
+        # Путь к сессии. Если явный путь не передан — используем
+        # ``src.config.SESSION_PATH``, который учитывает
+        # ``PARSER_SESSION_PATH`` env override от веб-панели.
         if session_path:
             self.session_path = session_path
         else:
-            # Используем стандартный путь
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            self.session_path = os.path.join(base_dir, 'sessions', 'telegram_session.session')
+            self.session_path = SESSION_PATH
         
         # Создаем директорию для сессий, если она не существует
         os.makedirs(os.path.dirname(self.session_path), exist_ok=True)
