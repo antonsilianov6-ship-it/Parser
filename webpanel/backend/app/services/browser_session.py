@@ -340,6 +340,12 @@ class BrowserSessionManager:
             # and merely close any leftover pages so the noVNC viewport
             # shows the new login tab and nothing else.
             contexts = list(browser.contexts)
+            # Track whether we own ``page`` (created it) or merely borrowed
+            # it from Chromium's persistent default context. Closing a
+            # borrowed page when it's the last one alive kills Chromium and
+            # bricks the browser container until restart — so on the error
+            # path we park borrowed pages on about:blank instead.
+            page_is_borrowed = False
             if not contexts:
                 context = await browser.new_context()
                 page = await context.new_page()
@@ -353,6 +359,7 @@ class BrowserSessionManager:
                 pages = list(context.pages)
                 if pages:
                     page = pages[0]
+                    page_is_borrowed = True
                     for extra in pages[1:]:
                         try:
                             await extra.close()
@@ -365,19 +372,35 @@ class BrowserSessionManager:
             # Don't close ``context`` or ``browser`` here either — same
             # persistent-context caveat as in ``_teardown``. Closing them
             # tears down Chromium and breaks subsequent auth attempts.
-            for handle, closer in (
-                (locals().get("page"), lambda h: h.close()),
-                (playwright, lambda h: h.stop()),
-            ):
-                if handle is None:
-                    continue
-                try:
-                    await closer(handle)
-                except Exception:  # noqa: BLE001 — best-effort
-                    logger.debug(
-                        "Cleanup error while unwinding failed _open_page",
-                        exc_info=True,
-                    )
+            current_page = locals().get("page")
+            if current_page is not None:
+                if page_is_borrowed:
+                    # Park the borrowed page rather than closing it (closing
+                    # the last persistent-context page exits Chromium).
+                    try:
+                        await current_page.goto(
+                            "about:blank", wait_until="domcontentloaded"
+                        )
+                    except Exception:  # noqa: BLE001 — best-effort
+                        logger.debug(
+                            "Cleanup error while parking borrowed page",
+                            exc_info=True,
+                        )
+                else:
+                    try:
+                        await current_page.close()
+                    except Exception:  # noqa: BLE001 — best-effort
+                        logger.debug(
+                            "Cleanup error while closing owned page",
+                            exc_info=True,
+                        )
+            try:
+                await playwright.stop()
+            except Exception:  # noqa: BLE001 — best-effort
+                logger.debug(
+                    "Cleanup error while unwinding failed _open_page",
+                    exc_info=True,
+                )
             raise
 
         session._playwright = playwright

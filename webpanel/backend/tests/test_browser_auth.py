@@ -444,3 +444,88 @@ def test_resolve_cdp_url_falls_back_on_dns_failure(monkeypatch: pytest.MonkeyPat
     assert (
         browser_session._resolve_cdp_url("http://nope:9222") == "http://nope:9222"
     )
+
+
+def test_open_page_goto_failure_does_not_close_borrowed_page(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Regression: when ``page.goto`` fails on a *borrowed* persistent-context
+    page, the error handler must NOT close it. Closing the last page in the
+    persistent default context kills Chromium and bricks the browser
+    container until restart. The handler must instead park the page on
+    about:blank — same logic ``_teardown`` uses for the happy path.
+    """
+    import asyncio
+
+    close_calls: list[str] = []
+    goto_calls: list[str] = []
+
+    class _BorrowedPage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+
+        async def goto(self, url: str, **__: Any) -> None:
+            goto_calls.append(url)
+            if url != "about:blank":
+                raise RuntimeError("transient network error")
+
+        async def close(self) -> None:
+            close_calls.append("page")
+
+    class _PersistentContext:
+        def __init__(self) -> None:
+            self.pages = [_BorrowedPage()]
+
+        async def close(self) -> None:
+            close_calls.append("context")
+
+    class _CdpBrowser:
+        def __init__(self) -> None:
+            self.contexts = [_PersistentContext()]
+
+        async def close(self) -> None:
+            close_calls.append("browser")
+
+    class _Chromium:
+        async def connect_over_cdp(self, _: str) -> _CdpBrowser:
+            return _CdpBrowser()
+
+    class _Playwright:
+        chromium = _Chromium()
+
+        async def stop(self) -> None:
+            return None
+
+    class _Manager:
+        async def start(self) -> _Playwright:
+            return _Playwright()
+
+    import playwright.async_api as pw_module
+
+    monkeypatch.setattr(pw_module, "async_playwright", lambda: _Manager())
+
+    bootstrap_login(client)
+    from app.config import get_settings
+    from app.services.browser_session import BrowserSession, get_manager
+
+    mgr = get_manager(get_settings())
+    session = BrowserSession(
+        id="t",
+        user_id=1,
+        purpose="notebooklm",
+        target_url="https://notebooklm.google.com/",
+        success_url_substring="https://notebooklm.google.com",
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(mgr._open_page(session))
+
+    # The borrowed page must NOT have been closed.
+    assert "page" not in close_calls, (
+        "borrowed page was closed — this kills Chromium "
+        "(see _teardown's comment)"
+    )
+    # The borrowed context / browser must NOT have been closed either.
+    assert "context" not in close_calls
+    assert "browser" not in close_calls
+    # And the page must have been parked on about:blank.
+    assert goto_calls[-1] == "about:blank"
