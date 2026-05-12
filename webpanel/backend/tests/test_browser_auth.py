@@ -404,3 +404,43 @@ def test_deleting_user_cancels_their_browser_session(
     )
     assert admin_session.status_code == 200, admin_session.text
     assert admin_session.json()["id"] != bob_session["id"]
+
+
+def test_resolve_cdp_url_replaces_hostname_with_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hostnames in the CDP URL must be resolved to an IP literal so
+    Chromium's "Host header must be an IP or localhost" check passes.
+    """
+    import socket as _socket
+
+    def _fake(host: str) -> str:
+        assert host == "browser"
+        return "172.18.0.42"
+
+    monkeypatch.setattr(_socket, "gethostbyname", _fake)
+    assert (
+        browser_session._resolve_cdp_url("http://browser:9222")
+        == "http://172.18.0.42:9222"
+    )
+
+
+def test_resolve_cdp_url_passthrough_for_localhost_and_ip() -> None:
+    assert (
+        browser_session._resolve_cdp_url("http://localhost:9222")
+        == "http://localhost:9222"
+    )
+    assert (
+        browser_session._resolve_cdp_url("http://127.0.0.1:9222")
+        == "http://127.0.0.1:9222"
+    )
+
+
+def test_resolve_cdp_url_falls_back_on_dns_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket as _socket
+
+    def _boom(_: str) -> str:
+        raise OSError("no DNS")
+
+    monkeypatch.setattr(_socket, "gethostbyname", _boom)
+    assert (
+        browser_session._resolve_cdp_url("http://nope:9222") == "http://nope:9222"
+    )

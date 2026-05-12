@@ -28,6 +28,7 @@ RUN apt-get update \
         fonts-noto-color-emoji \
         dumb-init \
         procps \
+        socat \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
